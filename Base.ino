@@ -48,6 +48,7 @@ const float SCALE_DIVIDER = 422.6; // scacle_divider padrão
 const Hour ACTIVE_START_HOUR = {7, 0}; // Horário de inicio das atividades da balança
 const Hour ACTIVE_END_HOUR = {17, 0};// Horário de fim das atividades da balança
 const unsigned long GRACE_PERIOD = 900000; // Periodo de carência (15 minutos em ms)
+// const unsigned long GRACE_PERIOD = 1000000; // Periodo de carência (1 minutos em ms)
 
 // Configurações de hidratação
 const int DAILY_GOAL = 2000; // Meta diaria
@@ -72,6 +73,11 @@ const int DAYLIGHT_OFFSET_SEC = 0;       // Ajuste de horário de verão (0 = de
 // Para o calculo do consumo
 const int NOISE_TOLERANCE = 2; // Goles menores que 2mL são considerados ruído e ignorados (Porque podem estar proximo da borda entre um e outro ex: 56.9 - 57.1)
 const unsigned long SETTLING_TIME = 1500; // Tempo de espera (ms) para a estabilização da leitura
+
+// Animações (Melodias)
+const Note RED_NOTES[] = { {784, 100}, {0, 80}, {1046, 100}, {0, 80}, {1175, 100}, {0, 80}, {1318, 100}, {0, 80}, {1568, 300} }; // Alerta Crítico
+const Note YELLOW_NOTES[] = { {880, 150}, {0, 100}, {784, 250} }; // Aviso de Atenção
+const Note GREEN_NOTES[] = { {523, 100}, {0, 50}, {659, 100}, {0, 50}, {784, 200} }; // Sucesso
 /*==================================================================================*/
 
 /* --- Variáveis globais e instâncias --- */
@@ -116,6 +122,16 @@ bool is_active = false; // Está dentro da janela de tempo?
 // Controle de tempo 
 bool was_active = false; // Estava dentro da janela de tempo?
 int last_reset_day = 0; // Ultimo dia em que a balança resetou
+
+// Variaveis para o motor de animacoes
+AlertState current_playing_alert = IDLE; 
+bool is_alert_pausing = false; // O alerta está no intervalo entre as 3 repetições?
+unsigned long alert_pause_start = 0; // Instante exato desde o inicio do ultimo ciclo da alerta
+unsigned long current_animation_interval = 0; // Intervalo da animacao atual
+unsigned long previous_animation_time = 0; // Instante exato do ultima animacao
+unsigned long last_alert_instant = 0; // Instante exato do fim do ultimo alerta
+int note_index = 0; // Indice atual da nota na melodia
+int alert_repeat_count = 0; // Contagem de repetições da melodia atual
 /*==================================================================================*/
 
 /* --- Definição de configurações e parâmetros (Partição "config" da NVS) --- */
@@ -187,8 +203,8 @@ Hour getActiveEndHour()
   // Consulta valor na NVS
   Preferences preferences;
   preferences.begin("config", false); 
-  active_end.hour = preferences.getInt("start_hour", ACTIVE_END_HOUR.hour);
-  active_end.minute = preferences.getInt("start_minute", ACTIVE_END_HOUR.minute);
+  active_end.hour = preferences.getInt("end_hour", ACTIVE_END_HOUR.hour);
+  active_end.minute = preferences.getInt("end_minute", ACTIVE_END_HOUR.minute);
   preferences.end(); 
 
   return active_end;
@@ -548,6 +564,7 @@ void setupHydration()
   Serial.println(" ml");
   Serial.print("Last sip time: "); 
   Serial.printf("%02d:%02d:%02d", struct_last_sip_time.tm_hour, struct_last_sip_time.tm_min, struct_last_sip_time.tm_sec);
+  Serial.println(); 
   Serial.print("Last reset day: "); 
   Serial.println(last_reset_day); 
   Serial.println("===============================================================================");
@@ -659,7 +676,7 @@ void restoreDefaults()
 }
 /*==================================================================================*/
 
-/* --- Motor de animações visuais e sonoras --- */
+/* --- Motor de animações visuais e sonoras (LEDs e Buzzer) --- */
 /*==================================================================================*/
 void turnOnLed(int index, bool r, bool g, bool b) 
 {
@@ -674,6 +691,239 @@ void turnOffAllLeds()
   {
     turnOnLed(i, LOW, LOW, LOW); 
   }
+}
+
+void processAnimations()
+{
+  if (current_playing_alert == IDLE) // O estado é IDLE?
+  {
+    // Se for IDLE não faz nada
+    return;
+  }
+
+  unsigned long current_instant = millis(); // Instante exato desde o inicio do funcionamento do ESP
+
+  if (is_alert_pausing) // O alerta está no intervalo entre as 3 repetições
+  {
+    if (current_instant - alert_pause_start >= 3000) // Passou o tempo de 3 segundos desde o ultimo alerta?
+    {
+      // Reinicia a animação
+      is_alert_pausing = false;
+      note_index = 0; // Volta ao indice zero da melodia
+      current_animation_interval = 0; // Define em qual intervalo esta (Para definir quantas vezes ja tocou o alerta)
+      previous_animation_time = current_instant;
+    }
+    return;
+  }
+
+  // Variaveis baseadas no estado da melodia
+  bool r = LOW, g = LOW, b = LOW; // Cores dos LEDs
+  int note_count = 0; // Quantidade de notas na melodia
+  int max_repeats = 3; // Numero máximo de repetições da animacao por alerta
+  const Note *current_notes = nullptr; // Vetor de notas atual
+
+  if (current_playing_alert == GREEN)
+  {
+    note_count = sizeof(GREEN_NOTES) / sizeof(GREEN_NOTES[0]);
+    current_notes = GREEN_NOTES;
+    r = LOW;
+    g = HIGH;
+    b = LOW;
+    max_repeats = 1;
+  }
+  else if (current_playing_alert == YELLOW)
+  {
+    note_count = sizeof(YELLOW_NOTES) / sizeof(YELLOW_NOTES[0]);
+    current_notes = YELLOW_NOTES;
+    r = HIGH;
+    g = HIGH;
+    b = LOW;
+  }
+  else if (current_playing_alert == RED)
+  {
+    note_count = sizeof(RED_NOTES) / sizeof(RED_NOTES[0]);
+    current_notes = RED_NOTES;
+    r = HIGH;
+    g = LOW;
+    b = LOW;
+  }
+
+  if (current_instant - previous_animation_time >= current_animation_interval) // sdgfdsgsd
+  {
+    previous_animation_time = current_instant;
+
+    if (note_index >= note_count) // Tocou todas as melodias no ciclo atual?
+    {
+      alert_repeat_count++;
+
+      if (alert_repeat_count >= max_repeats) // Repetiu a melodia o número maximo de vezes? (3 vezes para RED e YELLOW e 1 vez para GREEN)
+      {
+        if (current_playing_alert == YELLOW || current_playing_alert == RED) // O estado atual é YELLOW ou RED?
+        {
+          // Atualiza a variavel last_alert_instant para fazer a verificação de grace_time
+          last_alert_instant = millis();
+        }
+
+        noTone(BUZZER);
+        turnOffAllLeds(); 
+
+        current_playing_alert = IDLE; // Libera o sistema para tocar novos alertas
+      }
+      else // Ainda não tocou todas as melodias no ciclo atual?
+      {
+        is_alert_pausing = true;
+        alert_pause_start = current_instant;
+
+        noTone(BUZZER);
+
+        // Acende os leds com as cores definidas
+        for (int i = 0; i < 5; i++)
+        {
+          turnOnLed(i, r, g, b);
+        }
+      }
+      return;
+    }
+
+    // Lê a frequência e o tempo da nota atual
+    int freq = current_notes[note_index].frequency;
+    int dur = current_notes[note_index].duration;
+
+    if (freq > 0) // A frequência é maior que zero?
+    {
+      // Toca as melodias e executa as animações
+
+      tone(BUZZER, freq, dur);
+      turnOffAllLeds(); // Limpa para a nova animação
+
+      if (current_playing_alert == GREEN)
+      {
+        // Animação iniciando no LED central
+        int stage = note_index / 2;
+
+        turnOnLed(2, r, g, b);
+
+        if (stage >= 1)
+        {
+          turnOnLed(1, r, g, b);
+          turnOnLed(3, r, g, b);
+        }
+        if (stage >= 2)
+        {
+          turnOnLed(0, r, g, b);
+          turnOnLed(4, r, g, b);
+        }
+      }
+      else if (current_playing_alert == YELLOW)
+      {
+        // Acende todos os leds
+        for (int i = 0; i < 5; i++)
+        {
+          turnOnLed(i, r, g, b);
+        }
+      }
+      else if (current_playing_alert == RED)
+      {
+        // Acende um led de cada vez da esquerda para a direita
+
+        int active_led = note_index / 2;
+
+        if (active_led < 5)
+        {
+          turnOnLed(active_led, r, g, b);
+        }
+      }
+    }
+    else // A frequência é zero?
+    {
+      noTone(BUZZER);
+      turnOffAllLeds(); 
+    }
+
+    current_animation_interval = dur; 
+    note_index++; 
+  }
+}
+
+void triggerAlert(AlertState type)
+{
+  if (current_playing_alert != IDLE) // A animação atual não é IDLE (Deligada)?
+  {
+    // Não executa animação
+    return;
+  }
+
+  current_playing_alert = type;
+  
+  // Reinicia as variaveis de animação
+  note_index = 0;                                 
+  current_animation_interval = 0;                
+  previous_animation_time = millis(); 
+  alert_repeat_count = 0; 
+  is_alert_pausing = false;
+}
+
+void handleAlerts()
+{
+  if (current_consumed_volume > 0) // O usuário consumiu água?
+  {
+    triggerAlert(GREEN);
+  }
+
+  if (current_playing_alert != IDLE) // Tem alguma animação tocando?
+  {
+    return; 
+  }
+
+
+  if (millis() - last_alert_instant < grace_period) // Está no período de carência?
+  {
+    switch (current_state)
+    {
+      case IDLE:
+        turnOffAllLeds();
+        break;
+      case GREEN:
+        for (int i = 0; i < 5; i++)
+        {
+          turnOnLed(i, LOW, HIGH, LOW);
+        }
+        break;
+      case YELLOW:
+        for (int i = 0; i < 5; i++)
+        {
+          turnOnLed(i, HIGH, HIGH, LOW);
+        }
+        break;
+      case RED:
+        for (int i = 0; i < 5; i++)
+        {
+          turnOnLed(i, HIGH, LOW, LOW);
+        }
+        break;
+    }
+  }
+  else // Não está no período de carência?
+  {
+    if (current_state == YELLOW || current_state == RED)
+    {
+      triggerAlert(current_state);
+    }
+    else if (current_state == GREEN)
+    {
+      for (int i = 0; i < 5; i++)
+      {
+        turnOnLed(i, LOW, HIGH, LOW);
+      }
+    }
+    else if (current_state == IDLE)
+    {
+      turnOffAllLeds();
+    }
+
+  }
+
+  
 }
 /*==================================================================================*/
 
@@ -723,39 +973,6 @@ void handleDayChange()
   
   was_active = is_active;
 }
-// void handleDayChange()
-// {
-//   if (last_sip_time == 0) // O horario do ultimo gole esta zerado?
-//   {
-//     return;
-//   }
-
-//   struct tm tm_now;
-//   localtime_r(&now, &tm_now);
-  
-//   struct tm tm_last;
-//   localtime_r(&last_sip_time, &tm_last);
-
-//   if (tm_now.tm_mday != tm_last.tm_mday || tm_now.tm_mon != tm_last.tm_mon) // O dia ou mês mudaram?
-//   {
-//     Serial.println("===============================================================================");
-//     Serial.println("New date detected! Reseting consumption...");
-
-//     current_state = IDLE;
-//     deficit = 0;
-
-//     daily_consumed = 0;
-
-//     Preferences preferences;
-//     preferences.begin("hydration", false);
-//     preferences.putInt("daily_consumed", 0);
-//     preferences.end();
-
-//     Serial.println("===============================================================================");
-
-//   }
-// }
-
 /*==================================================================================*/
 
 /* --- Gerenciamento da Máquina de Estados (FSM) --- */
@@ -943,32 +1160,32 @@ void handleFiniteStateMachine(int consumed_now) // Quando virar o dia (Terminar 
 
 /* --- Testes e depuracao --- */
 /*==================================================================================*/
-// void handleSerialCommands() 
-// {
-//   if (Serial.available() > 0) 
-//   {
-//     char cmd = Serial.read(); 
+void handleSerialCommands() 
+{
+  if (Serial.available() > 0) 
+  {
+    char cmd = Serial.read(); 
     
-//     if (cmd == 'G' || cmd == 'g') {
-//       Serial.println("\n[TESTE] >>> Disparando Alerta VERDE! <<<");
-//       triggerAlert(GREEN, true, true); 
-//     }
-//     else if (cmd == 'Y' || cmd == 'y') {
-//       Serial.println("\n[TESTE] >>> Disparando Alerta AMARELO! <<<");
-//       triggerAlert(YELLOW, true, true);
-//     }
-//     else if (cmd == 'R' || cmd == 'r') {
-//       Serial.println("\n[TESTE] >>> Disparando Alerta VERMELHO! <<<");
-//       triggerAlert(RED, true, true);
-//     }
-//     else if (cmd == 'P' || cmd == 'p') {
-//       Serial.println("\n[TESTE] >>> Forçando a parada das animações! <<<");
-//       playing_alert = IDLE;
-//       noTone(BUZZER);
-//       turnOffAllLeds();
-//     }
-//   }
-// }
+    if (cmd == 'G' || cmd == 'g') {
+      Serial.println("[TESTE] Disparando Alerta VERDE!");
+      triggerAlert(GREEN); 
+    }
+    else if (cmd == 'Y' || cmd == 'y') {
+      Serial.println("[TESTE] Disparando Alerta AMARELO!");
+      triggerAlert(YELLOW);
+    }
+    else if (cmd == 'R' || cmd == 'r') {
+      Serial.println("[TESTE] Disparando Alerta VERMELHO!");
+      triggerAlert(RED);
+    }
+    else if (cmd == 'P' || cmd == 'p') {
+      Serial.println("[TESTE] Forçando a parada das animações!");
+      current_playing_alert = IDLE;
+      noTone(BUZZER);
+      turnOffAllLeds();
+    }
+  }
+}
 
 void printFiniteStateMachineData () // Printa os dados da máquina de estados
 {
@@ -1028,47 +1245,64 @@ void setup()
   setupWifi(); 
   setupConfigs(); 
   setupHydration(); 
+
+  // Define o estado inicial da FSM
+  handleFiniteStateMachine(0);
+  if (current_state == YELLOW || current_state == RED)
+  {
+    triggerAlert(current_state);
+  }
 }
 
 void loop() 
 {
   now = time(NULL); // Atualiza o horario (Tem que fazer isso antes de qualquer outra coisa)
 
-  // handleSerialCommands(); // Gerencia comandos recebidos pela porta Serial
+  // Depuração e testes
+  handleSerialCommands(); // Gerencia comandos recebidos pela porta Serial
+
+  // Gerenciamento de rede e hardware
   handleWifiConnection(); // Gerencia Conexão WiFi
   handleHardReset(); // Gerencia botão "en" para restaurar dados de fabrica
+
+  // Gerenciamento da FSM
   handleFiniteStateMachine(current_consumed_volume); // Gerencia os estados da maquina de estados
 
+  // Gerenciamento de mudança de datas
   handleDayChange(); // Gerencia mudança de datas (Tem que ser depois de handleFiniteStateMachine por que precisa da variavel is_active atualizada)
+
+  // Gerenciamento das animações
+  handleAlerts(); // Gerencia os alertas
+  processAnimations(); // Processa as animaçoes (Tem quer depois de handleFiniteStateMachine por que precisa do estado atualizado)
   
-  // Temporario
-  switch (current_state)
-  {
-    case IDLE:
-      turnOffAllLeds();
-      break;
-    case GREEN:
-      turnOnLed(0, LOW, HIGH, LOW); 
-      turnOnLed(1, LOW, HIGH, LOW); 
-      turnOnLed(2, LOW, HIGH, LOW); 
-      turnOnLed(3, LOW, HIGH, LOW); 
-      turnOnLed(4, LOW, HIGH, LOW); 
-      break;
-    case YELLOW:
-      turnOnLed(0, HIGH, HIGH, LOW); 
-      turnOnLed(1, HIGH, HIGH, LOW); 
-      turnOnLed(2, HIGH, HIGH, LOW); 
-      turnOnLed(3, HIGH, HIGH, LOW); 
-      turnOnLed(4, HIGH, HIGH, LOW); 
-      break;
-    case RED:
-      turnOnLed(0, HIGH, LOW, LOW); 
-      turnOnLed(1, HIGH, LOW, LOW); 
-      turnOnLed(2, HIGH, LOW, LOW); 
-      turnOnLed(3, HIGH, LOW, LOW); 
-      turnOnLed(4, HIGH, LOW, LOW); 
-      break;
-  }
+  // // Temporario
+  // switch (current_state)
+  // {
+  //   case IDLE:
+  //     turnOffAllLeds();
+  //     break;
+  //   case GREEN:
+  //     turnOnLed(0, LOW, HIGH, LOW); 
+  //     turnOnLed(1, LOW, HIGH, LOW); 
+  //     turnOnLed(2, LOW, HIGH, LOW); 
+  //     turnOnLed(3, LOW, HIGH, LOW); 
+  //     turnOnLed(4, LOW, HIGH, LOW); 
+  //     break;
+  //   case YELLOW:
+  //     turnOnLed(0, HIGH, HIGH, LOW); 
+  //     turnOnLed(1, HIGH, HIGH, LOW); 
+  //     turnOnLed(2, HIGH, HIGH, LOW); 
+  //     turnOnLed(3, HIGH, HIGH, LOW); 
+  //     turnOnLed(4, HIGH, HIGH, LOW); 
+  //     break;
+  //   case RED:
+  //     turnOnLed(0, HIGH, LOW, LOW); 
+  //     turnOnLed(1, HIGH, LOW, LOW); 
+  //     turnOnLed(2, HIGH, LOW, LOW); 
+  //     turnOnLed(3, HIGH, LOW, LOW); 
+  //     turnOnLed(4, HIGH, LOW, LOW); 
+  //     break;
+  // }
 
   if(scale.is_ready())
   {
@@ -1085,8 +1319,13 @@ void loop()
     struct tm struct_last_sip_time; 
     localtime_r(&last_sip_time, &struct_last_sip_time);
 
-    struct tm struct_last_alert_time; 
-    localtime_r(&last_alert_time, &struct_last_alert_time);
+    // struct tm struct_last_alert_time; 
+    // localtime_r(&last_alert_time, &struct_last_alert_time);
+
+    // Instante do ultimo alerta
+    Serial.print("last_alert_instant:");
+    Serial.print(last_alert_instant); 
+    Serial.print(", ");
 
     // Printa os dados da maquina de estados
     printFiniteStateMachineData();
