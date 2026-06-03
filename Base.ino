@@ -134,7 +134,7 @@ int note_index = 0; // Indice atual da nota na melodia
 int alert_repeat_count = 0; // Contagem de repetições da melodia atual
 
 // Variaveis para depuração
-// time_t last_alert_time;
+bool is_test_alert = false; // Flag para ignorar atualização de tempo em testes pelo Serial
 /*==================================================================================*/
 
 /* --- Definição de configurações e parâmetros (Partição "config" da NVS) --- */
@@ -761,16 +761,17 @@ void processAnimations()
 
       if (alert_repeat_count >= max_repeats) // Repetiu a melodia o número maximo de vezes? (3 vezes para RED e YELLOW e 1 vez para GREEN)
       {
-        // Atualiza a variavel last_alert_instant para fazer a verificação de grace_time
-        last_alert_instant = millis();
-
-        // Para depuração, depois apagar
-        last_alert_time = time(NULL);
+        if (!is_test_alert) // Só atualiza os tempos se NÃO for um comando do Serial
+        {
+          last_alert_instant = millis(); // Atualiza a variavel last_alert_instant para fazer a verificação de grace_time
+          last_alert_time = time(NULL); // Para depuração, depois apagar
+        }
 
         noTone(BUZZER);
         turnOffAllLeds(); 
 
         current_playing_alert = IDLE; // Libera o sistema para tocar novos alertas
+        is_test_alert = false; // Devolve o controle para o sistema normal
       }
       else // Ainda não tocou todas as melodias no ciclo atual?
       {
@@ -929,7 +930,6 @@ void handleAlerts()
   
 }
 /*==================================================================================*/
-
 
 /* --- Controle de Tempo e Datas --- */
 /*==================================================================================*/
@@ -1171,19 +1171,23 @@ void handleSerialCommands()
     
     if (cmd == 'G' || cmd == 'g') {
       Serial.println("[TESTE] Disparando Alerta VERDE!");
+      is_test_alert = true; // Avisa que é um teste
       triggerAlert(GREEN); 
     }
     else if (cmd == 'Y' || cmd == 'y') {
       Serial.println("[TESTE] Disparando Alerta AMARELO!");
+      is_test_alert = true; // Avisa que é um teste
       triggerAlert(YELLOW);
     }
     else if (cmd == 'R' || cmd == 'r') {
       Serial.println("[TESTE] Disparando Alerta VERMELHO!");
+      is_test_alert = true; // Avisa que é um teste
       triggerAlert(RED);
     }
     else if (cmd == 'P' || cmd == 'p') {
       Serial.println("[TESTE] Forçando a parada das animações!");
       current_playing_alert = IDLE;
+      is_test_alert = false; // Reseta a flag ao cancelar
       noTone(BUZZER);
       turnOffAllLeds();
     }
@@ -1226,6 +1230,8 @@ void printFiniteStateMachineData () // Printa os dados da máquina de estados
   Serial.print(daily_consumed); 
   Serial.print(", ");
 }
+
+
 /*==================================================================================*/
 
 void setup() 
