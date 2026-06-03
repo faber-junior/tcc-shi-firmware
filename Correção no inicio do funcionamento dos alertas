@@ -46,9 +46,9 @@ const float SCALE_DIVIDER = 422.6; // scacle_divider padrão
 
 // Configurações de funcionamento para a máquina de estados
 const Hour ACTIVE_START_HOUR = {7, 0}; // Horário de inicio das atividades da balança
-const Hour ACTIVE_END_HOUR = {17, 0};// Horário de fim das atividades da balança
-const unsigned long GRACE_PERIOD = 900000; // Periodo de carência (15 minutos em ms)
-// const unsigned long GRACE_PERIOD = 1000000; // Periodo de carência (1 minutos em ms)
+const Hour ACTIVE_END_HOUR = {20, 0};// Horário de fim das atividades da balança
+// const unsigned long GRACE_PERIOD = 900000; // Periodo de carência (15 minutos em ms)
+const unsigned long GRACE_PERIOD = 60000; // Periodo de carência (1 minutos em ms)
 
 // Configurações de hidratação
 const int DAILY_GOAL = 2000; // Meta diaria
@@ -132,6 +132,9 @@ unsigned long previous_animation_time = 0; // Instante exato do ultima animacao
 unsigned long last_alert_instant = 0; // Instante exato do fim do ultimo alerta
 int note_index = 0; // Indice atual da nota na melodia
 int alert_repeat_count = 0; // Contagem de repetições da melodia atual
+
+// Variaveis para depuração
+// time_t last_alert_time;
 /*==================================================================================*/
 
 /* --- Definição de configurações e parâmetros (Partição "config" da NVS) --- */
@@ -758,11 +761,11 @@ void processAnimations()
 
       if (alert_repeat_count >= max_repeats) // Repetiu a melodia o número maximo de vezes? (3 vezes para RED e YELLOW e 1 vez para GREEN)
       {
-        if (current_playing_alert == YELLOW || current_playing_alert == RED) // O estado atual é YELLOW ou RED?
-        {
-          // Atualiza a variavel last_alert_instant para fazer a verificação de grace_time
-          last_alert_instant = millis();
-        }
+        // Atualiza a variavel last_alert_instant para fazer a verificação de grace_time
+        last_alert_instant = millis();
+
+        // Para depuração, depois apagar
+        last_alert_time = time(NULL);
 
         noTone(BUZZER);
         turnOffAllLeds(); 
@@ -1246,12 +1249,7 @@ void setup()
   setupConfigs(); 
   setupHydration(); 
 
-  // Define o estado inicial da FSM
-  handleFiniteStateMachine(0);
-  if (current_state == YELLOW || current_state == RED)
-  {
-    triggerAlert(current_state);
-  }
+  last_alert_instant = millis() - grace_period; // Força o sistema a inicilizar um alerta se os estados forem YELLOW ou RED
 }
 
 void loop() 
@@ -1319,8 +1317,8 @@ void loop()
     struct tm struct_last_sip_time; 
     localtime_r(&last_sip_time, &struct_last_sip_time);
 
-    // struct tm struct_last_alert_time; 
-    // localtime_r(&last_alert_time, &struct_last_alert_time);
+    struct tm struct_last_alert_time; 
+    localtime_r(&last_alert_time, &struct_last_alert_time);
 
     // Instante do ultimo alerta
     Serial.print("last_alert_instant:");
@@ -1346,11 +1344,11 @@ void loop()
     // else Serial.printf("%02d:%02d:%02d", struct_last_sip_time.tm_hour, struct_last_sip_time.tm_min, struct_last_sip_time.tm_sec); 
     // Serial.print(", ");
 
-    // // Horario do ultimo alerta
-    // Serial.print("last_alert_time:");
-    // if (last_alert_time == 0) Serial.print("00:00:00");
-    // else Serial.printf("%02d:%02d:%02d", struct_last_alert_time.tm_hour, struct_last_alert_time.tm_min, struct_last_alert_time.tm_sec); 
-    // Serial.print(", ");
+    // Horario do ultimo alerta
+    Serial.print("last_alert_time:");
+    if (last_alert_time == 0) Serial.print("00:00:00");
+    else Serial.printf("%02d:%02d:%02d", struct_last_alert_time.tm_hour, struct_last_alert_time.tm_min, struct_last_alert_time.tm_sec); 
+    Serial.print(", ");
 
     // Horario do ultimo gole
     Serial.print("last_sip_time:");
