@@ -47,8 +47,8 @@ const float SCALE_DIVIDER = 422.6; // scacle_divider padrão
 // Configurações de funcionamento para a máquina de estados
 const Hour ACTIVE_START_HOUR = {7, 0}; // Horário de inicio das atividades da balança
 const Hour ACTIVE_END_HOUR = {20, 0};// Horário de fim das atividades da balança
-// const unsigned long GRACE_PERIOD = 900000; // Periodo de carência (15 minutos em ms)
-const unsigned long GRACE_PERIOD = 60000; // Periodo de carência (1 minutos em ms)
+const unsigned long GRACE_PERIOD = 900000; // Periodo de carência (15 minutos em ms)
+// const unsigned long GRACE_PERIOD = 60000; // Periodo de carência (1 minutos em ms)
 
 // Configurações de hidratação
 const int DAILY_GOAL = 2000; // Meta diaria
@@ -135,6 +135,14 @@ int alert_repeat_count = 0; // Contagem de repetições da melodia atual
 
 // Variaveis para depuração
 bool is_test_alert = false; // Flag para ignorar atualização de tempo em testes pelo Serial
+bool time_acceleration_active = false;
+unsigned long simulated_time_offset = 0;
+unsigned long last_accel_tick = 0;
+unsigned long real_grace_period = 0;
+unsigned int acceleration_factor = 60;
+time_t accelerated_time;
+time_t simulated_last_sip_time = 0;
+time_t simulated_last_alert_time = 0;
 /*==================================================================================*/
 
 /* --- Definição de configurações e parâmetros (Partição "config" da NVS) --- */
@@ -408,6 +416,7 @@ int getConsumption(int current_weight)
 
           setDailyConsumed(daily_consumed + consumed_volume);
           setLastSipTime(time(NULL));
+          simulated_last_sip_time = now;
 
           Serial.print("Consumed water: ");
           Serial.print(consumed_volume);
@@ -765,6 +774,7 @@ void processAnimations()
         {
           last_alert_instant = millis(); // Atualiza a variavel last_alert_instant para fazer a verificação de grace_time
           last_alert_time = time(NULL); // Para depuração, depois apagar
+          simulated_last_alert_time = now;
         }
 
         noTone(BUZZER);
@@ -1169,27 +1179,55 @@ void handleSerialCommands()
   {
     char cmd = Serial.read(); 
     
-    if (cmd == 'G' || cmd == 'g') {
+    if (cmd == 'G' || cmd == 'g') 
+    {
       Serial.println("[TESTE] Disparando Alerta VERDE!");
       is_test_alert = true; // Avisa que é um teste
       triggerAlert(GREEN); 
     }
-    else if (cmd == 'Y' || cmd == 'y') {
+    else if (cmd == 'Y' || cmd == 'y') 
+    {
       Serial.println("[TESTE] Disparando Alerta AMARELO!");
       is_test_alert = true; // Avisa que é um teste
       triggerAlert(YELLOW);
     }
-    else if (cmd == 'R' || cmd == 'r') {
+    else if (cmd == 'R' || cmd == 'r') 
+    {
       Serial.println("[TESTE] Disparando Alerta VERMELHO!");
       is_test_alert = true; // Avisa que é um teste
       triggerAlert(RED);
     }
-    else if (cmd == 'P' || cmd == 'p') {
+    else if (cmd == 'P' || cmd == 'p') 
+    {
       Serial.println("[TESTE] Forçando a parada das animações!");
       current_playing_alert = IDLE;
       is_test_alert = false; // Reseta a flag ao cancelar
       noTone(BUZZER);
       turnOffAllLeds();
+    }
+    else if (cmd == 'A' || cmd == 'a') 
+    {
+      time_acceleration_active = !time_acceleration_active;
+      
+      if (time_acceleration_active) 
+      {
+        Serial.println("\n===============================================================");
+        Serial.printf("Tempo Acelerado ATIVADO! (Fator: %d segs por tick)\n", acceleration_factor);
+        Serial.println("===============================================================\n");
+        
+        real_grace_period = grace_period; // Salva o original
+        grace_period = 5000;              // Encolhe a carência para 5 segundos no teste             
+        last_accel_tick = millis();
+      } 
+      else 
+      {
+        Serial.println("\n===============================================================");
+        Serial.println("Tempo Acelerado DESATIVADO!");
+        Serial.println("===============================================================\n");
+        
+        grace_period = real_grace_period; // Restaura o original
+        simulated_time_offset = 0;        // Zera o tempo falso
+      }
     }
   }
 }
@@ -1231,7 +1269,28 @@ void printFiniteStateMachineData () // Printa os dados da máquina de estados
   Serial.print(", ");
 }
 
-
+void applyTimeAcceleration() 
+{
+  now = time(NULL); // Puxa o tempo real do RTC do ESP32
+  time_t real_time = now; 
+  
+  if (time_acceleration_active) // A aceleração de tempo está ativa?
+  {
+    unsigned long current_millis = millis();
+    
+    if (current_millis - last_accel_tick >= 1000) 
+    {
+      simulated_time_offset += acceleration_factor; // Adiciona x segundos irreais a cada segundo real
+      last_accel_tick = current_millis;
+      
+      struct tm tm_sim;
+      accelerated_time = real_time + simulated_time_offset;
+      localtime_r(&accelerated_time, &tm_sim);
+    }
+    
+    now += simulated_time_offset; // A FSM e a depuração olham apenas para o tempo distorcido
+  }
+}
 /*==================================================================================*/
 
 void setup() 
@@ -1255,14 +1314,20 @@ void setup()
   setupConfigs(); 
   setupHydration(); 
 
+  // Variaveis para simular tempo acelerado
+  simulated_last_sip_time = last_sip_time;
+  simulated_last_alert_time = last_alert_time;
+
   last_alert_instant = millis() - grace_period; // Força o sistema a inicilizar um alerta se os estados forem YELLOW ou RED
 }
 
 void loop() 
 {
+  // Nao apagar mesmo se estiver comentado!
   now = time(NULL); // Atualiza o horario (Tem que fazer isso antes de qualquer outra coisa)
 
   // Depuração e testes
+  applyTimeAcceleration(); // Acelera o tempo
   handleSerialCommands(); // Gerencia comandos recebidos pela porta Serial
 
   // Gerenciamento de rede e hardware
@@ -1278,35 +1343,6 @@ void loop()
   // Gerenciamento das animações
   handleAlerts(); // Gerencia os alertas
   processAnimations(); // Processa as animaçoes (Tem quer depois de handleFiniteStateMachine por que precisa do estado atualizado)
-  
-  // // Temporario
-  // switch (current_state)
-  // {
-  //   case IDLE:
-  //     turnOffAllLeds();
-  //     break;
-  //   case GREEN:
-  //     turnOnLed(0, LOW, HIGH, LOW); 
-  //     turnOnLed(1, LOW, HIGH, LOW); 
-  //     turnOnLed(2, LOW, HIGH, LOW); 
-  //     turnOnLed(3, LOW, HIGH, LOW); 
-  //     turnOnLed(4, LOW, HIGH, LOW); 
-  //     break;
-  //   case YELLOW:
-  //     turnOnLed(0, HIGH, HIGH, LOW); 
-  //     turnOnLed(1, HIGH, HIGH, LOW); 
-  //     turnOnLed(2, HIGH, HIGH, LOW); 
-  //     turnOnLed(3, HIGH, HIGH, LOW); 
-  //     turnOnLed(4, HIGH, HIGH, LOW); 
-  //     break;
-  //   case RED:
-  //     turnOnLed(0, HIGH, LOW, LOW); 
-  //     turnOnLed(1, HIGH, LOW, LOW); 
-  //     turnOnLed(2, HIGH, LOW, LOW); 
-  //     turnOnLed(3, HIGH, LOW, LOW); 
-  //     turnOnLed(4, HIGH, LOW, LOW); 
-  //     break;
-  // }
 
   if(scale.is_ready())
   {
@@ -1317,33 +1353,46 @@ void loop()
 
     current_consumed_volume = getConsumption((int)filtered_weight); // Calcula o volume consumido (ou não)
 
-    struct tm time_now; 
-    localtime_r(&now, &time_now);
+    // Tempo real sem aceleracao de tempo
+    time_t real_time_now = time(NULL); 
+    struct tm struct_real_time; 
+    localtime_r(&real_time_now, &struct_real_time);
 
+    // Tempo acelerado
+    struct tm struct_fsm_time;
+    localtime_r(&now, &struct_fsm_time);
+
+    // Horario do ultimo gole
+    time_t display_sip = time_acceleration_active ? simulated_last_sip_time : last_sip_time;
     struct tm struct_last_sip_time; 
-    localtime_r(&last_sip_time, &struct_last_sip_time);
+    localtime_r(&display_sip, &struct_last_sip_time);
 
+    // Horario do ultimo alerta
+    time_t display_alert = time_acceleration_active ? simulated_last_alert_time : last_alert_time;
     struct tm struct_last_alert_time; 
-    localtime_r(&last_alert_time, &struct_last_alert_time);
+    localtime_r(&display_alert, &struct_last_alert_time);
+    
 
-    // Instante do ultimo alerta
-    Serial.print("last_alert_instant:");
-    Serial.print(last_alert_instant); 
+    // Horario atual
+    Serial.print("time:");
+    Serial.printf("%02d:%02d:%02d", struct_real_time.tm_hour, struct_real_time.tm_min, struct_real_time.tm_sec);
     Serial.print(", ");
 
-    // Printa os dados da maquina de estados
-    printFiniteStateMachineData();
+    // Horário acelerado
+    Serial.print("accelerated_time:");
+    Serial.printf("%02d:%02d:%02d", struct_fsm_time.tm_hour, struct_fsm_time.tm_min, struct_fsm_time.tm_sec); 
+    Serial.print(", ");
+  
+    // // Instante do ultimo alerta
+    // Serial.print("last_alert_instant:");
+    // Serial.print(last_alert_instant); 
+    // Serial.print(", ");    
     
     // // Instante exato desde o inicio do funcionamento do ESP32
     // Serial.print("instant:");
     // Serial.print(millis()); 
     // Serial.print(", ");
-
-    // // Horario atual
-    // Serial.print("time:");
-    // Serial.printf("%02d:%02d:%02d", time_now.tm_hour, time_now.tm_min, time_now.tm_sec);
-    // Serial.print(", ");
-
+    
     // // Horario do ultimo gole
     // Serial.print("last_sip_time:");
     // if (last_sip_time == 0) Serial.print("00:00:00");
@@ -1360,6 +1409,9 @@ void loop()
     Serial.print("last_sip_time:");
     Serial.printf("%02d:%02d:%02d", struct_last_sip_time.tm_hour, struct_last_sip_time.tm_min, struct_last_sip_time.tm_sec);
     Serial.print(", ");
+
+    // Printa os dados da maquina de estados
+    printFiniteStateMachineData();
 
     // Peso bruto
     Serial.print("weight:");
