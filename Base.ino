@@ -45,8 +45,8 @@ const long SCALE_OFFSET = -14988;  // offset padrão
 const float SCALE_DIVIDER = 422.6; // scacle_divider padrão
 
 // Configurações de funcionamento para a máquina de estados
-const Hour ACTIVE_START_HOUR = {22, 50}; // Horário de inicio das atividades da balança
-const Hour ACTIVE_END_HOUR = {23, 59};// Horário de fim das atividades da balança
+const Hour ACTIVE_START_HOUR = {21, 40}; // Horário de inicio das atividades da balança
+const Hour ACTIVE_END_HOUR = {0, 59};// Horário de fim das atividades da balança
 const unsigned long GRACE_PERIOD = 900000; // Periodo de carência (15 minutos em ms)
 
 // Configurações de hidratação
@@ -102,7 +102,6 @@ int current_consumed_volume = 0;
 
 // Dados de hidratação do usuario
 int daily_consumed = 0;
-int deficit = 0;
 time_t last_sip_time = 0; 
 time_t last_alert_time = 0; 
 
@@ -110,6 +109,13 @@ time_t last_alert_time = 0;
 enum AlertState { IDLE, GREEN, YELLOW, RED }; 
 AlertState current_state = IDLE; 
 time_t now; // Horário
+int current_ideal_volume = 0;
+int deficit = 0;
+bool is_active = false; // Está dentro da janela de tempo?
+
+// Controle de tempo 
+bool was_active = false; // Estava dentro da janela de tempo?
+int last_reset_day = 0; // Ultimo dia em que a balança resetou
 /*==================================================================================*/
 
 /* --- Processamento de sinais e matemática --- */
@@ -171,28 +177,31 @@ int getConsumption(int current_weight)
 {
   int consumed_volume = 0; 
 
-  if (current_weight < container_weight) 
+  if (current_weight < container_weight) // A balança está vazia?
   {
-    if (is_container_present) 
+    if (is_container_present) // O recipiente estava na balança?
     {
-      is_container_present = false; 
-      is_waiting_stability = false; 
+      // O recipiente acabou de ser retirado da balança
+      is_container_present = false; // Atualiza a flag para recipiente ausente
+      is_waiting_stability = false; // Atualiza a flag para indicar que está estável (em Regime Permanente)
     }
   }
-  else 
+  else //A balança não está vazia?
   {
-    if (!is_container_present) 
+    if (!is_container_present) // // O recipiente não estava na balança?
     {
-      is_container_present = true; 
-      is_waiting_stability = true; 
+      // O recipiente acabou de ser colocado na balança
+      is_container_present = true; // Atualiza a flag para recipiente presente
+      is_waiting_stability = true; // Atualiza a flag para indicar que está aguardando estabilidade (em Regime Transitório)
       time_container_placed = millis(); 
     }
 
-    if (is_waiting_stability && (millis() - time_container_placed > SETTLING_TIME)) 
+    if (is_waiting_stability && (millis() - time_container_placed > SETTLING_TIME)) // Está aguardando estabilidade e atingiu o tempo de acomodação
     {
+      // Atingiu estabilidade (Regime Permanente)
       is_waiting_stability = false; 
 
-      if (last_recorded_weight > (container_weight + NOISE_TOLERANCE)) 
+      if (last_recorded_weight > (container_weight + NOISE_TOLERANCE)) // O ultimo peso guardado era maior que o peso do recipiente somado com a tolerância?
       {
         int weight_difference = last_recorded_weight - current_weight; 
 
@@ -366,6 +375,7 @@ void setupHydration()
 
   daily_consumed = preferences.getInt("daily_consumed", 0);  
   last_sip_time = (time_t)preferences.getLong64("last_sip_time", 0);
+  last_reset_day = (time_t)preferences.getInt("last_reset_day", 0);
 
   preferences.end(); 
 
@@ -375,6 +385,8 @@ void setupHydration()
   Serial.println(" ml");
   Serial.print("Last sip time: "); 
   Serial.println(last_sip_time); 
+  Serial.print("Last reset day: "); 
+  Serial.println(last_reset_day); 
   Serial.println("===============================================================================");
 }
 /*==================================================================================*/
@@ -502,6 +514,86 @@ void turnOffAllLeds()
 }
 /*==================================================================================*/
 
+
+/* --- Controle de Tempo e Datas --- */
+/*==================================================================================*/
+void handleDayChange()
+{
+  struct tm time_now;
+
+  if (!getLocalTime(&time_now, 0)) // O relógio já está sincronizado com NTP?
+  {
+    // Se não estiver, retorna sem fazer nada
+    return; 
+  }
+
+  bool apply_reset = false;
+
+  if (was_active && !is_active) // Estava ativo não esta mais?
+  {
+    apply_reset = true;
+  }
+  else if (!is_active && (last_reset_day != time_now.tm_mday)) // Não esta ativo e ainda não resetou hoje? (Provavelmente ESP32 reiniciou fora do horario ativo)
+  {
+    apply_reset = true;
+  }
+
+  if (apply_reset)
+  {
+    Serial.println("===============================================================================");
+    Serial.println("New date detected! Reseting consumption...");
+
+    current_state = IDLE;
+    deficit = 0;
+    daily_consumed = 0;
+    last_reset_day = time_now.tm_mday; // Atualiza o ultimo reset para o dia atual
+
+    Preferences preferences;
+    preferences.begin("hydration", false);
+    preferences.putInt("daily_consumed", 0);
+    preferences.putInt("last_reset_day", last_reset_day);
+    preferences.end();
+
+    Serial.println("===============================================================================");
+  }
+  
+  was_active = is_active;
+}
+// void handleDayChange()
+// {
+//   if (last_sip_time == 0) // O horario do ultimo gole esta zerado?
+//   {
+//     return;
+//   }
+
+//   struct tm tm_now;
+//   localtime_r(&now, &tm_now);
+  
+//   struct tm tm_last;
+//   localtime_r(&last_sip_time, &tm_last);
+
+//   if (tm_now.tm_mday != tm_last.tm_mday || tm_now.tm_mon != tm_last.tm_mon) // O dia ou mês mudaram?
+//   {
+//     Serial.println("===============================================================================");
+//     Serial.println("New date detected! Reseting consumption...");
+
+//     current_state = IDLE;
+//     deficit = 0;
+
+//     daily_consumed = 0;
+
+//     Preferences preferences;
+//     preferences.begin("hydration", false);
+//     preferences.putInt("daily_consumed", 0);
+//     preferences.end();
+
+//     Serial.println("===============================================================================");
+
+//   }
+// }
+
+/*==================================================================================*/
+
 /* --- Gerenciamento da Máquina de Estados (FSM) --- */
 /*==================================================================================*/
 void handleFiniteStateMachine(int consumed_now) // Quando virar o dia (Terminar o horario ativo, deve zerar o deficit e voltar à IDLE)
@@ -513,7 +605,7 @@ void handleFiniteStateMachine(int consumed_now) // Quando virar o dia (Terminar 
   int start_mins = active_start_hour.hour * 60 + active_start_hour.minute;
   int end_mins = active_end_hour.hour * 60 + active_end_hour.minute;
 
-  bool is_active = [&]() -> bool {  
+  is_active = [&]() -> bool {  
     if (start_mins <= end_mins) // Janela padrão (ex: 17:00 às 23:59)
     {      
       return (current_mins >= start_mins && current_mins <= end_mins);
@@ -549,10 +641,14 @@ void handleFiniteStateMachine(int consumed_now) // Quando virar o dia (Terminar 
     } 
     else // Janela que passa da meia-noite (ex: 22:00 às 06:00)
     {      
-      if (current_mins <= end_mins) // Horario passou das 00:00
+      if (current_mins <= end_mins) // Horario passou das 23:59
       {
         mins_passed = (1440 - start_mins) + current_mins;
-      }      
+      }    
+      else // Horário não passou das 23:59
+      {
+        mins_passed = current_mins - start_mins;
+      }  
     } 
 
     if (total_active_mins == 0) // Evita erro de divisão por zero
@@ -560,8 +656,8 @@ void handleFiniteStateMachine(int consumed_now) // Quando virar o dia (Terminar 
       return 0;
     }
 
-    float ideal_volume = ((float)daily_goal / total_active_mins) * mins_passed; 
-    int calculated_deficit = (int)ideal_volume - daily_consumed;
+    current_ideal_volume = (int)(((float)daily_goal / total_active_mins) * mins_passed);
+    int calculated_deficit = current_ideal_volume - daily_consumed;
 
     return (calculated_deficit < 0) ? 0 : calculated_deficit; // Trava o déficit em 0 para não exibir números negativos (superávit)
   }(); // Deficit de hidratacao
@@ -595,7 +691,7 @@ void handleFiniteStateMachine(int consumed_now) // Quando virar o dia (Terminar 
       }
       break;
     case GREEN:
-      if (is_active > 0) // Está no horário ativo?
+      if (is_active) // Está no horário ativo?
       {
         if (consumed_now > 0) // Um gole foi ingerido ?
         {
@@ -628,7 +724,7 @@ void handleFiniteStateMachine(int consumed_now) // Quando virar o dia (Terminar 
       }
       break;
     case YELLOW:
-      if (is_active > 0) // Está no horário ativo?
+      if (is_active) // Está no horário ativo?
       {
         if (consumed_now > 0) // Um gole foi ingerido ?
         {
@@ -655,7 +751,7 @@ void handleFiniteStateMachine(int consumed_now) // Quando virar o dia (Terminar 
       }
       break;
     case RED:
-      if (is_active > 0) // Está no horário ativo?
+      if (is_active) // Está no horário ativo?
       {
         if (consumed_now > 0) // Um gole foi ingerido ?
         {
@@ -677,7 +773,7 @@ void handleFiniteStateMachine(int consumed_now) // Quando virar o dia (Terminar 
 }
 /*==================================================================================*/
 
-/* --- Teste e depuracao --- */
+/* --- Testes e depuracao --- */
 /*==================================================================================*/
 // void handleSerialCommands() 
 // {
@@ -705,6 +801,43 @@ void handleFiniteStateMachine(int consumed_now) // Quando virar o dia (Terminar 
 //     }
 //   }
 // }
+
+void printFiniteStateMachineData () // Printa os dados da máquina de estados
+{
+  char *state; // Cria uma "string" para o estado da máquina
+
+  switch (current_state)
+  {
+    case IDLE:
+      state = "IDLE";
+      break;
+    case GREEN:
+      state = "GREEN";
+      break;
+    case YELLOW:
+      state = "YELLOW";
+      break;
+    case RED:
+      state = "RED";
+      break;
+  }
+
+  Serial.print("current_state:");
+  Serial.print(state); 
+  Serial.print(", ");
+
+  Serial.print("deficit:");
+  Serial.print(deficit); 
+  Serial.print(", ");
+
+  Serial.print("current_ideal_volume:");
+  Serial.print(current_ideal_volume); 
+  Serial.print(", ");
+
+  Serial.print("daily_consumed:");
+  Serial.print(daily_consumed); 
+  Serial.print(", ");
+}
 /*==================================================================================*/
 
 void setup() 
@@ -736,8 +869,7 @@ void loop()
   // handleSerialCommands(); // Gerencia comandos recebidos pela porta Serial
   handleWifiConnection(); // Gerencia Conexão WiFi
   handleHardReset(); // Gerencia botão "en" para restaurar dados de fabrica
-  handleFiniteStateMachine(current_consumed_volume); // Gerencia os estados da maquina de estados
-
+  
   // Temporario
   switch (current_state)
   {
@@ -784,49 +916,42 @@ void loop()
 
     struct tm struct_last_alert_time; 
     localtime_r(&last_alert_time, &struct_last_alert_time);
+
+    // Printa os dados da maquina de estados
+    printFiniteStateMachineData();
     
-    Serial.print("instant:");
-    Serial.print(millis()); 
-    Serial.print(", ");
-
-    Serial.print("time:");
-    Serial.printf("%02d:%02d:%02d", time_now.tm_hour, time_now.tm_min, time_now.tm_sec);
-    Serial.print(", ");
-
-    Serial.print("last_sip_time:");
-    if (last_sip_time == 0) Serial.print("00:00:00");
-    else Serial.printf("%02d:%02d:%02d", struct_last_sip_time.tm_hour, struct_last_sip_time.tm_min, struct_last_sip_time.tm_sec); 
-    Serial.print(", ");
-
-    Serial.print("last_alert_time:");
-    if (last_alert_time == 0) Serial.print("00:00:00");
-    else Serial.printf("%02d:%02d:%02d", struct_last_alert_time.tm_hour, struct_last_alert_time.tm_min, struct_last_alert_time.tm_sec); 
-    Serial.print(", ");
-
-    // Serial.print("state:");
-    // Serial.printf(current_alert_state);
+    // // Instante exato desde o inicio do funcionamento do ESP32
+    // Serial.print("instant:");
+    // Serial.print(millis()); 
     // Serial.print(", ");
 
-    Serial.print("deficit:");
-    Serial.print(deficit); 
-    Serial.print(", ");
-
-    Serial.print("daily_consumed:");
-    Serial.print(daily_consumed); 
-    Serial.print(", ");
-
-    /* Por enquanto nao remover isso daqui */
-    // Serial.print("sinal_bruto:");
-    // Serial.print(weight, 2); 
+    // // Horario atual
+    // Serial.print("time:");
+    // Serial.printf("%02d:%02d:%02d", time_now.tm_hour, time_now.tm_min, time_now.tm_sec);
     // Serial.print(", ");
 
+    // // Horario do ultimo gole
+    // Serial.print("last_sip_time:");
+    // if (last_sip_time == 0) Serial.print("00:00:00");
+    // else Serial.printf("%02d:%02d:%02d", struct_last_sip_time.tm_hour, struct_last_sip_time.tm_min, struct_last_sip_time.tm_sec); 
+    // Serial.print(", ");
+
+    // // Horario do ultimo alerta
+    // Serial.print("last_alert_time:");
+    // if (last_alert_time == 0) Serial.print("00:00:00");
+    // else Serial.printf("%02d:%02d:%02d", struct_last_alert_time.tm_hour, struct_last_alert_time.tm_min, struct_last_alert_time.tm_sec); 
+    // Serial.print(", ");
+
+    // Peso bruto
+    Serial.print("weight:");
+    Serial.print(weight, 2); 
+    Serial.print(", ");
+
+    // Peso filtrado
     Serial.print("sinal_filtrado:");
     Serial.println(filtered_weight, 2); 
 
-    if (current_consumed_volume != 0)
-    {
-      Serial.print("current_consumed:");
-      Serial.println(current_consumed_volume); 
-    }
+    handleFiniteStateMachine(current_consumed_volume); // Gerencia os estados da maquina de estados (Tem que ser no fim do Loop por causa do current_consumed_volume)
+    handleDayChange(); // Gerencia mudança de datas (Tem que ser no fim do Loop porque precisa do valor atualizado de is_active)
   }
 }
