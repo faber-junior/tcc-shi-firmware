@@ -45,8 +45,8 @@ const long SCALE_OFFSET = -14988;  // offset padrão
 const float SCALE_DIVIDER = 422.6; // scacle_divider padrão
 
 // Configurações de funcionamento para a máquina de estados
-const Hour ACTIVE_START_HOUR = {21, 40}; // Horário de inicio das atividades da balança
-const Hour ACTIVE_END_HOUR = {0, 59};// Horário de fim das atividades da balança
+const Hour ACTIVE_START_HOUR = {7, 0}; // Horário de inicio das atividades da balança
+const Hour ACTIVE_END_HOUR = {17, 0};// Horário de fim das atividades da balança
 const unsigned long GRACE_PERIOD = 900000; // Periodo de carência (15 minutos em ms)
 
 // Configurações de hidratação
@@ -116,6 +116,184 @@ bool is_active = false; // Está dentro da janela de tempo?
 // Controle de tempo 
 bool was_active = false; // Estava dentro da janela de tempo?
 int last_reset_day = 0; // Ultimo dia em que a balança resetou
+/*==================================================================================*/
+
+/* --- Definição de configurações e parâmetros (Partição "config" da NVS) --- */
+/*==================================================================================*/
+void setActiveStartHour(Hour active_start)
+{
+  active_start_hour = active_start; // Define a variável global
+
+  // Atualiza valor na NVS
+  Preferences preferences;
+  preferences.begin("config", false);
+  preferences.putInt("start_hour", active_start_hour.hour);
+  preferences.putInt("start_minute", active_start_hour.minute);
+  preferences.end(); 
+}
+
+void setActiveEndHour(Hour active_end)
+{
+  active_end_hour = active_end; // Define a variável global
+
+  // Atualiza valor na NVS
+  Preferences preferences;
+  preferences.begin("config", false); 
+  preferences.putInt("end_hour", active_end_hour.hour);
+  preferences.putInt("end_minute", active_end_hour.minute);
+  preferences.end(); 
+}
+
+void setGracePeriod(unsigned long grace)
+{
+  grace_period = grace; // Define a variável global
+
+  // Atualiza valor na NVS
+  Preferences preferences;
+  preferences.begin("config", false); 
+  preferences.putULong("grace_period", grace_period);
+  preferences.end(); 
+}
+
+void setDailyGoal(int goal)
+{
+  daily_goal = goal;
+
+  // Atualiza valor na NVS
+  Preferences preferences;
+  preferences.begin("config", false); 
+  preferences.putInt("daily_goal", daily_goal);
+  preferences.end(); 
+}
+
+Hour getActiveStartHour()
+{
+  Hour active_start;
+
+  // Consulta valor na NVS
+  Preferences preferences;
+  preferences.begin("config", false); 
+  active_start.hour = preferences.getInt("start_hour", ACTIVE_START_HOUR.hour);
+  active_start.minute = preferences.getInt("start_minute", ACTIVE_START_HOUR.minute);
+  preferences.end(); 
+
+  return active_start;
+}
+
+Hour getActiveEndHour()
+{
+  Hour active_end;
+  
+  // Consulta valor na NVS
+  Preferences preferences;
+  preferences.begin("config", false); 
+  active_end.hour = preferences.getInt("start_hour", ACTIVE_END_HOUR.hour);
+  active_end.minute = preferences.getInt("start_minute", ACTIVE_END_HOUR.minute);
+  preferences.end(); 
+
+  return active_end;
+}
+
+unsigned long getGracePeriod()
+{
+  unsigned long grace;
+
+  // Consulta valor na NVS
+  Preferences preferences;
+  preferences.begin("config", false); 
+  grace = preferences.getULong("grace_period", GRACE_PERIOD);
+  preferences.end(); 
+
+  return grace;
+}
+
+int getDailyGoal()
+{
+  int goal;
+
+  // Consulta valor na NVS
+  Preferences preferences;
+  preferences.begin("config", false); 
+  goal = preferences.getInt("daily_goal", DAILY_GOAL);
+  preferences.end(); 
+
+  return goal;
+}
+/*==================================================================================*/
+
+/* --- Definição de dados de hidratação (Partição "hydration" da NVS) --- */
+/*==================================================================================*/
+void setDailyConsumed(int consumed)
+{
+  daily_consumed = consumed;
+
+  // Atualiza valor na NVS
+  Preferences preferences;
+  preferences.begin("hydration", false);
+  preferences.putInt("daily_consumed", daily_consumed);
+  preferences.end(); 
+}
+
+void setLastSipTime(time_t last_sip)
+{
+  last_sip_time = last_sip;
+
+  // Atualiza valor na NVS
+  Preferences preferences;
+  preferences.begin("hydration", false);
+  preferences.putLong64("last_sip_time", (int64_t)last_sip_time);
+  preferences.end(); 
+}
+
+void setLastResetDay(int last_reset)
+{
+  last_reset_day = last_reset;
+
+  // Atualiza valor na NVS
+  Preferences preferences;
+  preferences.begin("hydration", false);
+  preferences.putInt("last_reset_day", last_reset_day);
+  preferences.end(); 
+}
+
+int getDailyConsumed()
+{
+  int consumed;
+
+  // Consulta valor na NVS
+  Preferences preferences;
+  preferences.begin("hydration", false); 
+  consumed = preferences.getInt("daily_consumed", 0);
+  preferences.end(); 
+
+  return consumed;
+}
+
+time_t getLastSipTime()
+{
+  int64_t last_sip;
+
+  // Consulta valor na NVS
+  Preferences preferences;
+  preferences.begin("hydration", false); 
+  last_sip = preferences.getLong64("last_sip_time", 0);
+  preferences.end(); 
+
+  return (time_t)last_sip;
+}
+
+int getLastResetDay()
+{
+  int last_reset;
+
+  // Consulta valor na NVS
+  Preferences preferences;
+  preferences.begin("hydration", false); 
+  last_reset = preferences.getInt("last_reset_day", 0);
+  preferences.end(); 
+
+  return last_reset;
+}
 /*==================================================================================*/
 
 /* --- Processamento de sinais e matemática --- */
@@ -209,14 +387,8 @@ int getConsumption(int current_weight)
         {
           consumed_volume =  weight_difference; 
 
-          daily_consumed += consumed_volume; 
-          last_sip_time = time(NULL); 
-
-          Preferences preferences;
-          preferences.begin("hydration", false);
-          preferences.putInt("daily_consumed", daily_consumed);
-          preferences.putLong64("last_sip_time", (int64_t)last_sip_time);
-          preferences.end();
+          setDailyConsumed(daily_consumed + consumed_volume);
+          setLastSipTime(time(NULL));
 
           Serial.print("Consumed water: ");
           Serial.print(consumed_volume);
@@ -322,38 +494,31 @@ void setupConfigs()
   Serial.println("===============================================================================");
   Serial.println("Loading system configurations from NVS...");
 
+  // Consulta grace_period na NVS (Se estiver zerado significa que a NVS ainda não tem dados)
   Preferences preferences;
   preferences.begin("config", false); 
-
   unsigned long saved_grace_period = preferences.getULong("grace_period", 0);
+  preferences.end(); 
 
-  if (saved_grace_period == 0) 
+  if (saved_grace_period == 0) // Não tem nenhum dado salvo na NVS?
   {
     Serial.println("Configs not found in NVS. Applying default configurations...");
 
-    preferences.putBytes("active_start_hour", &ACTIVE_START_HOUR, sizeof(Hour));
-    preferences.putBytes("active_end_hour", &ACTIVE_END_HOUR, sizeof(Hour));
-    
-    preferences.putULong("grace_period", GRACE_PERIOD);
-    preferences.putInt("daily_goal", DAILY_GOAL);
-
-    active_start_hour = ACTIVE_START_HOUR;
-    active_end_hour = ACTIVE_END_HOUR;
-    grace_period = GRACE_PERIOD;
-    daily_goal = DAILY_GOAL;
+    // Atualiza variavel global e NVS
+    setActiveStartHour(ACTIVE_START_HOUR);
+    setActiveEndHour(ACTIVE_END_HOUR);
+    setGracePeriod(GRACE_PERIOD);
+    setDailyGoal(DAILY_GOAL);
   }
   else
   {
     Serial.println("Configs found in NVS successfully!");
 
-    preferences.getBytes("active_start_hour", &active_start_hour, sizeof(Hour));
-    preferences.getBytes("active_end_hour", &active_end_hour, sizeof(Hour));
-    
-    grace_period = saved_grace_period; 
-    daily_goal = preferences.getInt("daily_goal", DAILY_GOAL);
-  }
-
-  preferences.end(); 
+    active_start_hour = getActiveStartHour();
+    active_end_hour = getActiveEndHour();
+    grace_period = getGracePeriod();
+    daily_goal = getDailyGoal();
+  }  
 
   Serial.println("System configurations applied successfully:");
   Serial.printf("Start Time: %02d:%02d\n", active_start_hour.hour, active_start_hour.minute);
@@ -370,21 +535,19 @@ void setupHydration()
   Serial.println("===============================================================================");
   Serial.println("Loading hydration data from NVS...");
 
-  Preferences preferences; 
-  preferences.begin("hydration", false); 
+  daily_consumed = getDailyConsumed();
+  last_sip_time = getLastSipTime();
+  last_reset_day = getLastResetDay();
 
-  daily_consumed = preferences.getInt("daily_consumed", 0);  
-  last_sip_time = (time_t)preferences.getLong64("last_sip_time", 0);
-  last_reset_day = (time_t)preferences.getInt("last_reset_day", 0);
-
-  preferences.end(); 
+  struct tm struct_last_sip_time;
+  localtime_r(&last_sip_time, &struct_last_sip_time);
 
   Serial.println("Hydration data loaded successfully:");
   Serial.print("Daily Consumed: "); 
   Serial.print(daily_consumed); 
   Serial.println(" ml");
   Serial.print("Last sip time: "); 
-  Serial.println(last_sip_time); 
+  Serial.printf("%02d:%02d:%02d", struct_last_sip_time.tm_hour, struct_last_sip_time.tm_min, struct_last_sip_time.tm_sec);
   Serial.print("Last reset day: "); 
   Serial.println(last_reset_day); 
   Serial.println("===============================================================================");
@@ -529,7 +692,7 @@ void handleDayChange()
 
   bool apply_reset = false;
 
-  if (was_active && !is_active) // Estava ativo não esta mais?
+  if (was_active && !is_active) // Estava ativo e não esta mais?
   {
     apply_reset = true;
   }
@@ -545,6 +708,7 @@ void handleDayChange()
 
     current_state = IDLE;
     deficit = 0;
+
     daily_consumed = 0;
     last_reset_day = time_now.tm_mday; // Atualiza o ultimo reset para o dia atual
 
@@ -604,6 +768,10 @@ void handleFiniteStateMachine(int consumed_now) // Quando virar o dia (Terminar 
   int current_mins = time_now.tm_hour * 60 + time_now.tm_min;
   int start_mins = active_start_hour.hour * 60 + active_start_hour.minute;
   int end_mins = active_end_hour.hour * 60 + active_end_hour.minute;
+
+  // Serial.print("current_mins: "); Serial.print(current_mins); Serial.print(", ");
+  // Serial.print("start_mins: "); Serial.print(start_mins); Serial.print(", ");
+  // Serial.print("end_mins: "); Serial.print(end_mins); Serial.println(", ");
 
   is_active = [&]() -> bool {  
     if (start_mins <= end_mins) // Janela padrão (ex: 17:00 às 23:59)
@@ -869,6 +1037,9 @@ void loop()
   // handleSerialCommands(); // Gerencia comandos recebidos pela porta Serial
   handleWifiConnection(); // Gerencia Conexão WiFi
   handleHardReset(); // Gerencia botão "en" para restaurar dados de fabrica
+  handleFiniteStateMachine(current_consumed_volume); // Gerencia os estados da maquina de estados
+
+  handleDayChange(); // Gerencia mudança de datas (Tem que ser depois de handleFiniteStateMachine por que precisa da variavel is_active atualizada)
   
   // Temporario
   switch (current_state)
@@ -942,6 +1113,11 @@ void loop()
     // else Serial.printf("%02d:%02d:%02d", struct_last_alert_time.tm_hour, struct_last_alert_time.tm_min, struct_last_alert_time.tm_sec); 
     // Serial.print(", ");
 
+    // Horario do ultimo gole
+    Serial.print("last_sip_time:");
+    Serial.printf("%02d:%02d:%02d", struct_last_sip_time.tm_hour, struct_last_sip_time.tm_min, struct_last_sip_time.tm_sec);
+    Serial.print(", ");
+
     // Peso bruto
     Serial.print("weight:");
     Serial.print(weight, 2); 
@@ -949,9 +1125,6 @@ void loop()
 
     // Peso filtrado
     Serial.print("sinal_filtrado:");
-    Serial.println(filtered_weight, 2); 
-
-    handleFiniteStateMachine(current_consumed_volume); // Gerencia os estados da maquina de estados (Tem que ser no fim do Loop por causa do current_consumed_volume)
-    handleDayChange(); // Gerencia mudança de datas (Tem que ser no fim do Loop porque precisa do valor atualizado de is_active)
+    Serial.println(filtered_weight, 2);    
   }
 }
