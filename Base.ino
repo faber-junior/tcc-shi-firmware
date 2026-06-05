@@ -4,7 +4,6 @@
 #include <WiFiManager.h>       // Biblioteca para gerenciamento de rede (Portal Cativo)
 #include "time.h"              // Biblioteca padrão do C++ para lidar com relógio e data
 #include <WebSocketsClient.h>  // Biblioteca para gerenciar clientes WebSocket (by Markus Sattler)
-// #include <SocketIOclient.h>    // Biblioteca oficial de Socket.io para ESP32
 #include <ArduinoJson.h>       // Biblioteca para lidar com JSONs
 #include <HTTPClient.h>        // Biblioteca para enviar requisições POST REST
 
@@ -81,7 +80,7 @@ const long GMT_OFFSET_SEC = -10800;      // Fuso horário do Brasil (UTC -3 hora
 const int DAYLIGHT_OFFSET_SEC = 0;       // Ajuste de horário de verão (0 = desligado)
 
 // Para o calculo do consumo
-const int NOISE_TOLERANCE = 2; // Goles menores que 2mL são considerados ruído e ignorados (Porque podem estar proximo da borda entre um e outro ex: 56.9 - 57.1)
+const int NOISE_TOLERANCE = 3; // Goles menores que 2mL são considerados ruído e ignorados (Porque podem estar proximo da borda entre um e outro ex: 56.9 - 57.1)
 const unsigned long SETTLING_TIME = 1500; // Tempo de espera (ms) para a estabilização da leitura
 
 // Animações (Melodias)
@@ -95,7 +94,8 @@ const Note GREEN_NOTES[] = { {523, 100}, {0, 50}, {659, 100}, {0, 50}, {784, 200
 HX711 scale; // Instância do HX711
 WebSocketsClient webSocket; // Classe pura de WebSocket
 String socketIO_url; 
-unsigned long last_ws_ping = 0; // Temporizador para o Heartbeat do Socket.IO
+unsigned long last_ws_ping = 0;
+unsigned long last_realtime_send = 0;
 
 // Vetores de armazenamento para os filtros
 float samples_median[NUM_SAMPLES_MEDIAN] = {0.0};
@@ -159,8 +159,12 @@ unsigned int acceleration_factor = 60;
 time_t accelerated_time;
 time_t simulated_last_sip_time = 0;
 time_t simulated_last_alert_time = 0;
-static unsigned long last_heap_print = 0;
-unsigned long last_http_ping = 0;
+// unsigned long last_http_ping = 0;
+
+// Variáveis temporárias para calibração física
+bool cancel_calibration_flag = false;
+long temp_offset = 0;
+float temp_scale_divider = 0.0;
 
 // Declaração de funções para o compilador
 void restoreDefaults();
@@ -364,84 +368,81 @@ int getLastResetDay()
 }
 /*==================================================================================*/
 
-/* --- Funções HTTP REST (Envio de Leitura e Calibração para o NestJS) --- */
+/* --- Funções de envio de dados via WebSocket --- */
 /*==================================================================================*/
-// void enviarGoleBackend(int quantidadeMl)
+// void enviarGoleWS(int volume_ml)
 // {
-//   if (WiFi.status() != WL_CONNECTED) {
-//     Serial.println("[HTTP] WiFi desconectado. Gole não enviado.");
+//   if (!webSocket.isConnected()) 
+//   {
+//     Serial.println("Disconnected. Sip not sent.");
 //     return;
 //   }
 
-//   HTTPClient http;
-//   String url = "https://" + String(WS_HOST) + "/dispositivos/leitura";
+//   DynamicJsonDocument doc(256);
+//   JsonArray array = doc.to<JsonArray>();
+//   array.add("registrar_leitura");
 
-//   http.begin(url);
-//   http.addHeader("Content-Type", "application/json");
-
-//   StaticJsonDocument<128> doc;
-//   doc["tokenAcesso"] = TOKEN_ACESSO;
-//   doc["quantidadeMl"] = quantidadeMl;
+//   JsonObject param = array.createNestedObject();
+//   param["tokenAcesso"]  = TOKEN_ACESSO;
+//   param["quantidadeMl"] = volume_ml;
 
 //   String payload;
-//   serializeJson(doc, payload);
+//   serializeJson(array, payload);
+//   webSocket.sendTXT("42" + payload);
 
-//   int httpCode = http.POST(payload);
-//   Serial.printf("[HTTP] POST Gole (%d mL) -> Code: %d\n", quantidadeMl, httpCode);
-//   http.end();
+//   Serial.printf("Sip sent: %d ml\n", volume_ml);
 // }
 
-// // void enviarLeituraCalibracaoBackend(int pesoVazioG)
-// // {
-// //   if (WiFi.status() != WL_CONNECTED) {
-// //     Serial.println("[HTTP] WiFi desconectado. Calibração não enviada.");
-// //     return;
-// //   }
-
-// //   HTTPClient http;
-// //   String url = "https://" + String(WS_HOST) + "/dispositivos/leitura-calibracao";
-
-// //   http.begin(url);
-// //   http.addHeader("Content-Type", "application/json");
-
-// //   StaticJsonDocument<128> doc;
-// //   doc["tokenAcesso"] = TOKEN_ACESSO;
-// //   doc["pesoVazioG"] = pesoVazioG;
-
-// //   String payload;
-// //   serializeJson(doc, payload);
-
-// //   int httpCode = http.POST(payload);
-// //   Serial.printf("[HTTP] POST Calibração (%d g) -> Code: %d\n", pesoVazioG, httpCode);
-// //   http.end();
-// // }
-// void enviarLeituraCalibracaoBackend(int pesoVazioG, String recipienteId)
+// void enviarCalibracaoWS(int pesoVazioG, String recipienteId)
 // {
-//   if (WiFi.status() != WL_CONNECTED) return;
+//   if (!webSocket.isConnected()) {
+//     Serial.println("[WS] Desconectado. Calibração não enviada.");
+//     return;
+//   }
 
-//   HTTPClient http;
-//   char url[128];
-//   snprintf(url, sizeof(url), "https://%s/dispositivos/leitura-calibracao", WS_HOST);
+//   DynamicJsonDocument doc(256);
+//   JsonArray array = doc.to<JsonArray>();
+//   array.add("registrar_calibracao");
 
-//   http.begin(url);
-//   http.addHeader("Content-Type", "application/json");
-
-//   StaticJsonDocument<256> doc;
-//   doc["tokenAcesso"]  = TOKEN_ACESSO;
-//   doc["pesoVazioG"]   = pesoVazioG;
-//   doc["recipienteId"] = recipienteId;
+//   JsonObject param = array.createNestedObject();
+//   param["tokenAcesso"]  = TOKEN_ACESSO;
+//   param["pesoVazioG"]   = pesoVazioG;
+//   param["recipienteId"] = recipienteId;
 
 //   String payload;
-//   serializeJson(doc, payload);
+//   serializeJson(array, payload);
+//   webSocket.sendTXT("42" + payload);
 
-//   int httpCode = http.POST(payload);
-//   Serial.printf("[HTTP] POST leitura-calibracao (%dg) -> %d\n", pesoVazioG, httpCode);
-//   http.end();
+//   Serial.printf("[WS] Calibração enviada: %d g\n", pesoVazioG);
 // }
-void enviarGoleWS(int quantidadeMl)
+
+// void enviarAlertaWS(String mensagem)
+// {
+//   if (!webSocket.isConnected()) {
+//     Serial.println("[WS] Desconectado. Alerta não enviado.");
+//     return;
+//   }
+
+//   DynamicJsonDocument doc(256);
+//   JsonArray array = doc.to<JsonArray>();
+//   array.add("registrar_alerta");
+
+//   JsonObject param = array.createNestedObject();
+//   param["tokenAcesso"] = TOKEN_ACESSO;
+//   param["mensagem"]    = mensagem;
+
+//   String payload;
+//   serializeJson(array, payload);
+//   webSocket.sendTXT("42" + payload);
+
+//   Serial.println("[WS] Alerta enviado ao backend.");
+// }
+
+void sendSip(int volume_ml)
 {
-  if (!webSocket.isConnected()) {
-    Serial.println("[WS] Desconectado. Gole não enviado.");
+  if (!webSocket.isConnected()) 
+  {
+    Serial.println("[Websocket] Disconnected! Sip not sent.");
     return;
   }
 
@@ -451,19 +452,20 @@ void enviarGoleWS(int quantidadeMl)
 
   JsonObject param = array.createNestedObject();
   param["tokenAcesso"]  = TOKEN_ACESSO;
-  param["quantidadeMl"] = quantidadeMl;
+  param["quantidadeMl"] = volume_ml;
 
   String payload;
   serializeJson(array, payload);
   webSocket.sendTXT("42" + payload);
 
-  Serial.printf("[WS] Gole enviado: %d ml\n", quantidadeMl);
+  Serial.printf("Sip sent: %d ml\n", volume_ml);
 }
 
-void enviarCalibracaoWS(int pesoVazioG, String recipienteId)
+void sendContainerWeight(int empty_weight, String container_id)
 {
-  if (!webSocket.isConnected()) {
-    Serial.println("[WS] Desconectado. Calibração não enviada.");
+  if (!webSocket.isConnected()) 
+  {
+    Serial.println("[Websocket] Disconnected! Container weight not sent.");
     return;
   }
 
@@ -473,20 +475,21 @@ void enviarCalibracaoWS(int pesoVazioG, String recipienteId)
 
   JsonObject param = array.createNestedObject();
   param["tokenAcesso"]  = TOKEN_ACESSO;
-  param["pesoVazioG"]   = pesoVazioG;
-  param["recipienteId"] = recipienteId;
+  param["pesoVazioG"]   = empty_weight;
+  param["recipienteId"] = container_id;
 
   String payload;
   serializeJson(array, payload);
   webSocket.sendTXT("42" + payload);
 
-  Serial.printf("[WS] Calibração enviada: %d g\n", pesoVazioG);
+  Serial.printf("[Websocket] Container weight sent: %d g\n", empty_weight);
 }
 
-void enviarAlertaWS(String mensagem)
+void sendAlert(String message)
 {
-  if (!webSocket.isConnected()) {
-    Serial.println("[WS] Desconectado. Alerta não enviado.");
+  if (!webSocket.isConnected()) 
+  {
+    Serial.println("[Websocket] Disconnected! Alert not sent.");
     return;
   }
 
@@ -496,13 +499,56 @@ void enviarAlertaWS(String mensagem)
 
   JsonObject param = array.createNestedObject();
   param["tokenAcesso"] = TOKEN_ACESSO;
-  param["mensagem"]    = mensagem;
+  param["mensagem"]    = message;
 
   String payload;
   serializeJson(array, payload);
   webSocket.sendTXT("42" + payload);
 
-  Serial.println("[WS] Alerta enviado ao backend.");
+  Serial.printf("[Websocket] Alert sent: &s\n", message);
+}
+
+void sendCalibrationStatus(String message)
+{
+  if (!webSocket.isConnected())
+  {
+    return;
+  }
+
+  DynamicJsonDocument doc(256);
+  JsonArray array = doc.to<JsonArray>();
+  array.add("calibracao_status"); // O Gabriel deve ter um @SubscribeMessage('calibracao_status') no NestJS
+
+  JsonObject param = array.createNestedObject();
+  param["tokenAcesso"] = TOKEN_ACESSO;
+  param["mensagem"] = message;
+
+  String payload;
+  serializeJson(array, payload);
+  webSocket.sendTXT("42" + payload);
+}
+
+void sendRealTimeWeight(int current_weight)
+{
+  if (!webSocket.isConnected()) 
+  {
+    return;
+  }
+
+  DynamicJsonDocument doc(128);
+  JsonArray array = doc.to<JsonArray>();
+  
+  // Nome do evento que o backend vai escutar
+  array.add("peso_em_tempo_real");
+
+  JsonObject param = array.createNestedObject();
+  param["tokenAcesso"] = TOKEN_ACESSO;
+  param["pesoAtual"] = current_weight;
+
+  String payload;
+  serializeJson(array, payload);
+  
+  webSocket.sendTXT("42" + payload);
 }
 /*==================================================================================*/
 
@@ -565,7 +611,7 @@ int getConsumption(int current_weight)
 {
   int consumed_volume = 0; 
 
-  if (current_weight < container_weight) // A balança está vazia?
+  if (current_weight < (container_weight + NOISE_TOLERANCE)) // A balança está vazia?
   {
     if (is_container_present) // O recipiente estava na balança?
     {
@@ -584,161 +630,478 @@ int getConsumption(int current_weight)
       time_container_placed = millis(); 
     }
 
-    if (is_waiting_stability && (millis() - time_container_placed > SETTLING_TIME)) // Está aguardando estabilidade e atingiu o tempo de acomodação
+    if (is_waiting_stability) // Está aguardando estabilidade?
     {
-      // Atingiu estabilidade (Regime Permanente)
-      is_waiting_stability = false; 
-
-      if (last_recorded_weight > (container_weight + NOISE_TOLERANCE)) // O ultimo peso guardado era maior que o peso do recipiente somado com a tolerância?
+      if (millis() - time_container_placed > SETTLING_TIME) // Atingiu o tempo de acomodação?
       {
-        int weight_difference = last_recorded_weight - current_weight; 
+        // Atingiu estabilidade (Regime Permanente)
+        is_waiting_stability = false; 
 
-        if (weight_difference > NOISE_TOLERANCE) 
+        if (last_recorded_weight > (container_weight + NOISE_TOLERANCE)) // O ultimo peso guardado era maior que o peso do recipiente somado com a tolerância?
         {
-          consumed_volume =  weight_difference; 
+          int weight_difference = last_recorded_weight - current_weight; 
 
-          setDailyConsumed(daily_consumed + consumed_volume);
-          setLastSipTime(time(NULL));
-          simulated_last_sip_time = now;
+          if (weight_difference > NOISE_TOLERANCE) 
+          {
+            // Se o valor for maior, provavelmente alguém encostou a mão na balança. Ignoramos.
+            if (weight_difference <= 600) 
+            {
+              consumed_volume =  weight_difference; 
 
-          Serial.print("Consumed water: ");
-          Serial.print(consumed_volume);
-          Serial.println(" ml");
+              setDailyConsumed(daily_consumed + consumed_volume);
+              setLastSipTime(time(NULL));
+              simulated_last_sip_time = now;
 
-          enviarGoleWS(consumed_volume);
+              Serial.print("Consumed water: ");
+              Serial.print(consumed_volume);
+              Serial.println(" ml");
+
+              sendSip(consumed_volume);
+            }
+            else
+            {
+              Serial.println("Sip rejected! Probable weight anomaly.");
+            }                 
+          }
+          else if (weight_difference < -NOISE_TOLERANCE) 
+          {
+            Serial.println("Container refilled.");
+          }
         }
-        else if (weight_difference < -NOISE_TOLERANCE) 
-        {
-          Serial.println("Container refilled.");
-        }
+        last_recorded_weight = current_weight; 
+      }      
+    }
+    else // Já estava estavel?
+    {
+      if (abs(current_weight - last_recorded_weight) > NOISE_TOLERANCE) 
+      {
+          is_waiting_stability = true;
+          time_container_placed = millis();
       }
-      last_recorded_weight = current_weight; 
     }
   }
   return consumed_volume;
+}
+
+void calibrateScale(float known_weight)
+{
+  Serial.println("===============================================================================");
+  Serial.println("Calibrating scale...");
+
+  if (known_weight <= 0.0) // O peso é invalido?
+  {
+    sendCalibrationStatus("Erro: Peso inválido!");
+    return; 
+  }
+
+  sendCalibrationStatus("Esvazie completamente a balança!");
+
+  Serial.print("Leave the scale completely clear in: ");
+  int countdown_time = 5; 
+  long initial_time = millis(); 
+  while (countdown_time >= 0)
+  {
+    webSocket.loop(); // Ouve o App durante a contagem!
+    if (cancel_calibration_flag) 
+    {
+        sendCalibrationStatus("Calibração cancelada!");
+        return;
+    }
+
+    if (millis() - initial_time >= 1000) 
+    {
+      Serial.print(countdown_time); Serial.print("...");
+      initial_time = millis();
+      countdown_time--;
+    }
+  }
+  Serial.println();
+
+  sendCalibrationStatus("Lendo tara. Não toque na balança..."); 
+
+  int sample = 0;
+  long offset = 0;
+  while (sample < 20) 
+  {
+    webSocket.loop(); // Ouve o App durante a leitura do sensor!
+    if (cancel_calibration_flag)
+    {
+      sendCalibrationStatus("Calibração cancelada!");
+      return; 
+    }
+
+    if (scale.is_ready()) 
+    {
+      Serial.print(".");
+      offset += scale.read();
+      sample++;
+    }
+  }
+  Serial.println();
+
+  offset = offset / 20;
+  
+  scale.set_offset(offset); // Aplica o offset na RAM para o cálculo seguinte, mas a NVS continua intacta!
+
+  String weight_message = "Coloque o peso de " + String(known_weight, 2) + "g na balança.";
+  sendCalibrationStatus(weight_message); 
+
+  Serial.print("Place the known weight on the scale in: ");
+  countdown_time = 5; 
+  initial_time = millis(); 
+  while (countdown_time >= 0) 
+  {
+    webSocket.loop();
+    if (cancel_calibration_flag) 
+    {
+        // Se cancelar aqui, restaura o Offset que estava antes de iniciarmos
+        Preferences pref; pref.begin("scale", true);
+        scale.set_offset(pref.getLong("offset", SCALE_OFFSET));
+        pref.end();
+        sendCalibrationStatus("Calibração cancelada!");
+        return;
+    }
+
+    if (millis() - initial_time >= 1000) 
+    {
+      Serial.print(countdown_time); Serial.print("...");
+      initial_time = millis();
+      countdown_time--;
+    }
+  }
+  Serial.println();
+
+  sendCalibrationStatus("Calculando fator de escala..."); 
+
+  sample = 0;
+  double weight_read = 0;
+  while (sample < 20) 
+  {
+    webSocket.loop();
+    if (cancel_calibration_flag) 
+    {
+        Preferences pref; pref.begin("scale", true);
+        scale.set_offset(pref.getLong("offset", SCALE_OFFSET));
+        pref.end();
+        sendCalibrationStatus("Calibração cancelada!");
+        return;
+    }
+
+    if (scale.is_ready()) 
+    {
+      Serial.print(".");
+      weight_read += scale.get_value(1);
+      sample++;
+    }
+  }
+  Serial.println();
+  
+  weight_read = weight_read / 20; 
+
+  if (weight_read == 0.0) 
+  {
+    sendCalibrationStatus("Erro: Nenhum peso detectado!");
+    Preferences pref; pref.begin("scale", true);
+    scale.set_offset(pref.getLong("offset", SCALE_OFFSET));
+    pref.end();
+    return;
+  }
+
+  // Salva na RAM, mas não NVS!
+  temp_offset = offset;
+  temp_scale_divider = weight_read / known_weight; 
+
+  // Restaura a balança para os valores antigos da memória caso o utilizador cancele!
+  Preferences preferences;
+  preferences.begin("scale", true);
+  scale.set_offset(preferences.getLong("offset", SCALE_OFFSET));
+  scale.set_scale(preferences.getFloat("scale_divider", SCALE_DIVIDER));
+  preferences.end();
+
+  sendCalibrationStatus("Pronto! Confirme no App para salvar permanentemente."); 
+
+  Serial.println("Calibration math completed! Awaiting backend confirmation...");
+  Serial.print("New calculated offset: "); Serial.println(temp_offset);
+  Serial.print("New calculated divider: "); Serial.println(temp_scale_divider, 4);
+  Serial.println("===============================================================================");
 }
 /*==================================================================================*/
 
 /* --- Lógica RAW do Socket.io v4 --- */
 /*==================================================================================*/
+// void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length) 
+// {
+//   switch (type)
+//   {
+//     case WStype_DISCONNECTED:
+//       Serial.println("===============================================================================");
+//       Serial.println("Disconnected from the NestJS server!");
+//       Serial.println("===============================================================================");
+//       break;
+
+//     case WStype_CONNECTED:
+//       Serial.println("===============================================================================");
+//       Serial.println("Connection to the NestJS has been estabilished! Waiting for the server answer.");
+//       Serial.println("===============================================================================");
+//       break;
+
+//     case WStype_TEXT:
+//     {
+//       if (length > 0 && payload[0] == '0') // O servidor abriu o túnel de conexão (cliente recebe type == '0')?
+//       {
+//         // Cliente responde que quer se conectar (cliente envia type == '40')
+//         Serial.println("===============================================================================");
+//         Serial.println("[Client -> Server] type: '40' (Requesting access)");
+//         Serial.println("===============================================================================");
+//         webSocket.sendTXT("40"); 
+//       }
+//       else if (length > 1 && payload[0] == '4' && payload[1] == '0') // O servidor aceitou a conexão (cliente recebe type == '40')?
+//       {
+//         // Conexão realizada com sucesso
+//         Serial.println("===============================================================================");
+//         Serial.println("[Server -> Client] type: '40' (Access authorized)");
+//         Serial.println("[Server -> Client] Awaiting commands and server pings to keep the connection alive!");
+//         Serial.println("===============================================================================");
+        
+//         // A MÁGICA É AQUI: Já não enviamos o evento de registo ("42").
+//         // Desta forma, não acionamos o ValidationPipe do NestJS e a conexão não cai!
+//       }
+//       else if (length > 1 && payload[0] == '4' && payload[1] == '2') // O servidor enviou um evento (cliente recebe type == '42')?
+//       {
+//         // Cliente recebe um payload JSON com comando
+//         char* jsonPayload = (char*)(payload + 2); // Salta o prefixo "42"
+//         StaticJsonDocument<256> doc;
+//         DeserializationError error = deserializeJson(doc, jsonPayload);
+        
+//         if (!error) // Não deu erro ao desserializar o JSON?
+//         {
+//           const char* evento = doc[0];
+          
+//           if (strcmp(evento, "comando") == 0) 
+//           { 
+//             String comandoReal = doc[1]["comando"].as<String>();
+//             float parametro = doc[1]["parametro"].as<float>();
+            
+//             Serial.printf("[WS APP] Ordem Remota Executada: %s\n", comandoReal.c_str());
+            
+//             if (comandoReal == "CALIBRAR" || comandoReal == "calibrate") 
+//             {
+//               String recipiente_id = doc[1]["parametro"].as<String>();
+//               setContainerWeight((int)filtered_weight);   
+//               last_recorded_weight = 0; 
+//               enviarCalibracaoWS((int)filtered_weight, recipiente_id);
+              
+//             }
+//             else if (comandoReal == "ZERAR_META") 
+//             {
+//               setDailyConsumed(0);
+//               setLastSipTime(0);
+//               simulated_last_sip_time = 0; 
+//               current_state = IDLE;
+//             }
+//             else if (comandoReal == "set_goal") 
+//             {
+//               setDailyGoal((int)parametro);
+//             }
+//             else if (comandoReal == "restore") 
+//             {
+//               restoreDefaults();
+//             }
+//             else if (comandoReal == "alerta_hidratacao") 
+//             {
+//               triggerAlert(YELLOW);
+//             }
+//             else if (comandoReal == "set_horario_acordar") 
+//             {
+//               Hour novo_horario = {(int)parametro, 0};
+//               setActiveStartHour(novo_horario);
+//             }
+//             else if (comandoReal == "set_horario_dormir") 
+//             {
+//               Hour novo_horario = {(int)parametro, 0};
+//               setActiveEndHour(novo_horario);
+//             }
+//             else if (comandoReal == "set_grace_period") 
+//             {
+//               unsigned long grace_ms = (unsigned long)parametro * 60 * 1000;
+//               setGracePeriod(grace_ms);
+//             }
+//             else if (comandoReal == "set_container_weight") {
+//               setContainerWeight((int)parametro);
+//               last_recorded_weight = 0; // Previne que o ajuste brusco conte como gole falso
+//               Serial.printf("[WS] Recipiente atualizado pelo backend: %d g\n", (int)parametro);
+//             }
+//             else if (comandoReal == "set_daily_consumed") {
+//               setDailyConsumed((int)parametro);
+              
+//               // Sincroniza o dia de reset lógico com o dia de hoje
+//               struct tm time_now;
+//               if (getLocalTime(&time_now, 0)) {
+//                   setLastResetDay(time_now.tm_mday);
+//               }
+//               Serial.printf("[WS] Volume diário de hoje recebido: %d ml\n", (int)parametro);
+//             }
+//           }
+//         }
+//       }
+//       else if (length > 0 && payload[0] == '2') // O servidor enviou um ping (cliente recebe type == '2')?
+//       {
+//         // O cliente responde com pong (type == '3') para manter a conexão ativa
+//         webSocket.sendTXT("3");
+//       }
+//       break;
+//     case WStype_PING:
+//       // O cliente responde com pong (type == '3') para manter a conexão ativa
+//       webSocket.sendTXT("3"); // Responde o pong do Socket.io
+//       break;
+//     }
+//   }
+// }
+
 void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length) 
 {
   switch (type)
   {
     case WStype_DISCONNECTED:
-      Serial.println("\n[WS ERRO] =========================================");
-      Serial.println("[WS ERRO] DESCONECTADO DO SERVIDOR NESTJS!");
-      Serial.println("[WS ERRO] =========================================\n");
+      Serial.println("===============================================================================");
+      Serial.println("Disconnected from the NestJS server!");
+      Serial.println("===============================================================================");
       break;
 
     case WStype_CONNECTED:
-      Serial.println("\n[WS] ==============================================");
-      Serial.println("[WS] Conexão TCP estabelecida! Aguardando o servidor falar...");
-      Serial.println("[WS] ==============================================\n");
+      Serial.println("===============================================================================");
+      Serial.println("Connection to the NestJS has been estabilished! Waiting for the server answer.");
+      Serial.println("===============================================================================");
       break;
 
     case WStype_TEXT:
     {
-      // Passo 1: O Servidor abriu as portas (Pacote "0")
-      if (length > 0 && payload[0] == '0') 
+      if (length > 0 && payload[0] == '0') // O servidor abriu o túnel de conexão (cliente recebe type == '0')?
       {
-        Serial.println("[WS CLIENT DIZ] -> 40 (Solicitando entrada...)");
+        // Cliente responde que quer se conectar (cliente envia type == '40')
+        Serial.println("===============================================================================");
+        Serial.println("[Client -> Server] type: '40' (Requesting access)");
+        Serial.println("===============================================================================");
         webSocket.sendTXT("40"); 
       }
-      // Passo 2: O Servidor autorizou a entrada (Pacote "40")
-      else if (length > 1 && payload[0] == '4' && payload[1] == '0') 
+      else if (length > 1 && payload[0] == '4' && payload[1] == '0') // O servidor aceitou a conexão (cliente recebe type == '40')?
       {
-        Serial.println("[WS] Autenticado! (O NestJS já nos registou automaticamente pela URL).");
-        Serial.println("[WS] A aguardar comandos e Pings do servidor para manter a conexão viva...");
+        // Conexão realizada com sucesso
+        Serial.println("===============================================================================");
+        Serial.println("[Server -> Client] type: '40' (Access authorized)");
+        Serial.println("[Server -> Client] Awaiting commands and server pings to keep the connection alive!");
         Serial.println("===============================================================================");
         
         // A MÁGICA É AQUI: Já não enviamos o evento de registo ("42").
         // Desta forma, não acionamos o ValidationPipe do NestJS e a conexão não cai!
       }
-      // Passo 3: Recebemos um Comando Remoto do NestJS (Pacote "42")
-      else if (length > 1 && payload[0] == '4' && payload[1] == '2') 
+      else if (length > 1 && payload[0] == '4' && payload[1] == '2') // O servidor enviou um evento (cliente recebe type == '42')?
       {
+        // Cliente recebe um payload JSON com comando
         char* jsonPayload = (char*)(payload + 2); // Salta o prefixo "42"
         StaticJsonDocument<256> doc;
         DeserializationError error = deserializeJson(doc, jsonPayload);
         
-        if (!error) {
+        if (!error) // Não deu erro ao desserializar o JSON?
+        {
           const char* evento = doc[0];
           
-          if (strcmp(evento, "comando") == 0) { 
-            String comandoReal = doc[1]["comando"].as<String>();
-            float parametro = doc[1]["parametro"].as<float>();
+          if (strcmp(evento, "comando") == 0) // O evento é do tipo "comando"?
+          { 
+            String command = doc[1]["comando"].as<String>(); // Recebe o comando enviado pelo servidor
+            float parameter = doc[1]["parametro"].as<float>(); // Recebe qual o parâmetro do comando enviado pelo servidor
+
+            command.toLowerCase(); // Transforma tudo em minusculas
             
-            Serial.printf("[WS APP] Ordem Remota Executada: %s\n", comandoReal.c_str());
+            Serial.printf("Remote command received: %s\n", command.c_str());
             
-            if (comandoReal == "CALIBRAR" || comandoReal == "calibrate") 
-            {
-              String recipiente_id = doc[1]["parametro"].as<String>();
-              setContainerWeight((int)filtered_weight);   
-              last_recorded_weight = 0; 
-              enviarCalibracaoWS((int)filtered_weight, recipiente_id);
-              
-            }
-            else if (comandoReal == "ZERAR_META") 
-            {
-              setDailyConsumed(0);
-              setLastSipTime(0);
-              simulated_last_sip_time = 0; 
-              current_state = IDLE;
-            }
-            else if (comandoReal == "set_goal") 
-            {
-              setDailyGoal((int)parametro);
-            }
-            else if (comandoReal == "restore") 
+            if (command == "restore")
             {
               restoreDefaults();
             }
-            else if (comandoReal == "alerta_hidratacao") 
+            else if (command == "set_goal") // Não esta funcionando, no back-end implementar o envio
             {
-              triggerAlert(YELLOW);
+              setDailyGoal((int)parameter);
             }
-            else if (comandoReal == "set_horario_acordar") 
+            else if (command == "set_grace_period") // Não esta funcionando, no back-end implementar o envio
             {
-              Hour novo_horario = {(int)parametro, 0};
-              setActiveStartHour(novo_horario);
-            }
-            else if (comandoReal == "set_horario_dormir") 
-            {
-              Hour novo_horario = {(int)parametro, 0};
-              setActiveEndHour(novo_horario);
-            }
-            else if (comandoReal == "set_grace_period") 
-            {
-              unsigned long grace_ms = (unsigned long)parametro * 60 * 1000;
+              unsigned long grace_ms = (unsigned long)parameter * 60 * 1000;
               setGracePeriod(grace_ms);
             }
-            else if (comandoReal == "set_container_weight") {
-              setContainerWeight((int)parametro);
-              last_recorded_weight = 0; // Previne que o ajuste brusco conte como gole falso
-              Serial.printf("[WS] Recipiente atualizado pelo backend: %d g\n", (int)parametro);
+            else if (command == "set_container_weight")
+            {
+              setContainerWeight((int)parameter);
             }
-            else if (comandoReal == "set_daily_consumed") {
-              setDailyConsumed((int)parametro);
-              
+            else if (command == "set_daily_consumed")
+            {
+              setDailyConsumed((int)parameter);
+
               // Sincroniza o dia de reset lógico com o dia de hoje
               struct tm time_now;
-              if (getLocalTime(&time_now, 0)) {
-                  setLastResetDay(time_now.tm_mday);
+              if (getLocalTime(&time_now, 0)) 
+              {
+                setLastResetDay(time_now.tm_mday);
               }
-              Serial.printf("[WS] Volume diário de hoje recebido: %d ml\n", (int)parametro);
+            }
+            else if (command == "set_active_start_hour") // Não esta funcionando, no back-end implementar o envio
+            {
+              Hour new_active_start_hour = {(int)parameter, 0};
+              setActiveStartHour(new_active_start_hour);
+            }
+            else if (command == "set_active_end_hour") // Não esta funcionando, no back-end implementar o envio
+            {
+              Hour new_active_start_hour = {(int)parameter, 0};
+              setActiveStartHour(new_active_start_hour);
+            }
+            else if (command == "get_container_weight") // Não esta funcionando ainda, no backend atualizar o nome do comando de "calibrate" para "get_container_weight"
+            {
+              String container_id = doc[1]["parametro"].as<String>();
+              setContainerWeight((int)filtered_weight);   
+              sendContainerWeight((int)filtered_weight, container_id);
+            }
+            else if (command == "calibrate")
+            {
+              float known_weight = doc[1]["parametro"].as<float>();
+              calibrateScale(known_weight);
+            }
+            else if (command == "cancel_calibration") 
+            {
+              cancel_calibration_flag = true;
+            }
+            else if (command == "commit_calibration") 
+            {
+              if (temp_scale_divider != 0.0) // Confirma se existem valores à espera
+              {
+                // Aplica fisicamente na balança
+                scale.set_offset(temp_offset);
+                scale.set_scale(temp_scale_divider);
+
+                // Grava permanentemente na NVS
+                Preferences preferences;
+                preferences.begin("scale", false);
+                preferences.putLong("offset", temp_offset);
+                preferences.putFloat("scale_divider", temp_scale_divider);
+                preferences.end();
+
+                // Limpa os temporários
+                temp_offset = 0;
+                temp_scale_divider = 0.0;
+
+                sendCalibrationStatus("Calibração gravada com sucesso!");
+                Serial.println("[WS] Nova calibração salva na memória permanente!");
+              }
             }
           }
         }
       }
-      // Passo 4: O NestJS enviou um Ping ("2") para saber se a balança está viva!
-      else if (length > 0 && payload[0] == '2') 
+      else if (length > 0 && payload[0] == '2') // O servidor enviou um ping (cliente recebe type == '2')?
       {
-        // Se não respondermos com "3" rapidamente, o Render corta a internet.
+        // O cliente responde com pong (type == '3') para manter a conexão ativa
         webSocket.sendTXT("3");
       }
       break;
     case WStype_PING:
+      // O cliente responde com pong (type == '3') para manter a conexão ativa
       webSocket.sendTXT("3"); // Responde o pong do Socket.io
       break;
     }
@@ -1676,18 +2039,41 @@ void loop()
 
   webSocket.loop(); // Mantém o WebSocket vivo e escuta comandos remotos
 
-  if (millis() - last_http_ping > 120000) { // A cada 2 minutos
-  last_http_ping = millis();
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    char url[128];
-    snprintf(url, sizeof(url), "https://%s/dispositivos/comando/%s", WS_HOST, TOKEN_ACESSO);
-    http.begin(url);
-    http.GET();
-    http.end();
-  }
-}
+  // if (millis() - last_http_ping > 120000) 
+  // { // A cada 2 minutos
+  //   last_http_ping = millis();
+  //   if (WiFi.status() == WL_CONNECTED) {
+  //     HTTPClient http;
+  //     char url[128];
+  //     snprintf(url, sizeof(url), "https://%s/dispositivos/comando/%s", WS_HOST, TOKEN_ACESSO);
+  //     http.begin(url);
+  //     http.GET();
+  //     http.end();
+  //   }
+  // }
 
+  // Envia um "Estou Online" para o backend a cada 30 segundos
+  if (millis() - last_ws_ping > 30000) 
+  { 
+    last_ws_ping = millis();
+    
+    if (webSocket.isConnected()) 
+    {
+      DynamicJsonDocument doc(128);
+      JsonArray array = doc.to<JsonArray>();
+      array.add("ping_dispositivo"); // Nome do evento no NestJS
+
+      JsonObject param = array.createNestedObject();
+      param["tokenAcesso"] = TOKEN_ACESSO;
+
+      String payload;
+      serializeJson(array, payload);
+      webSocket.sendTXT("42" + payload);
+      
+      // Descomente para debugar se necessário
+      // Serial.println("[WS] Ping de status online enviado ao backend.");
+    }
+  }
 
   // Gerenciamento da FSM
   handleFiniteStateMachine(current_consumed_volume); // Gerencia os estados da maquina de estados
@@ -1706,6 +2092,13 @@ void loop()
     filtered_weight = exponentialMovingAverage(median_weight, NUM_SAMPLES_MEDIAN); 
 
     current_consumed_volume = getConsumption((int)filtered_weight); // Calcula o volume consumido (ou não)
+
+    if (millis() - last_realtime_send > 1000) // 1000ms = 1s
+    {
+      last_realtime_send = millis();
+      
+      sendRealTimeWeight((int)filtered_weight);
+    }
 
     // Tempo real sem aceleracao de tempo
     time_t real_time_now = time(NULL); 
@@ -1793,7 +2186,7 @@ void loop()
     Serial.print(", ");
 
     // Peso filtrado
-    Serial.print("sinal_filtrado:");
+    Serial.print("filtered_weight:");
     Serial.println(filtered_weight, 2);    
   }
 }
