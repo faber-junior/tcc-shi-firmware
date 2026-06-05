@@ -1553,6 +1553,15 @@ void triggerAlert(AlertState type)
     return;
   }
 
+  if (type == YELLOW)
+  {
+    sendAlert("Alerta AMARELO. Atenção, você esta em estado de alerta para hidratação!");
+  }
+  else if (type == RED)
+  {
+    sendAlert("Alerta VERMELHO. Atenção, você esta atrasado na hidratação. Beba água!");
+  }
+
   current_playing_alert = type;
   
   // Reinicia as variaveis de animação
