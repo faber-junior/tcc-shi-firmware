@@ -64,7 +64,7 @@ Para compilar este projeto na Arduino IDE ou PlatformIO, instale as seguintes bi
 
 - **Máquina de Estados (FSM):** Avalia o déficit de hidratação cruzando a meta diária com o horário atual de expediente do usuário. Controla automaticamente os alertas `GREEN`, `YELLOW` e `RED`.
 - **Buffer Offline (Store & Forward):** Se a conexão com a internet cair, a balança continua a calcular os goles e guarda-os numa "mochila" na memória Flash (NVS). Quando a conexão é restaurada, os dados pendentes são injetados automaticamente no servidor.
-- **Detecção Avançada de Goles:** Algoritmo que detecta retirada do copo, reabastecimento fantasma e goles contínuos (com canudo) através da análise da variação do filtro matemático com tempo de acomodação (Settling Time) de 2.5s.
+- **Detecção Avançada de Goles:** Algoritmo que detecta retirada do copo, reabastecimento fantasma e goles contínuos (com canudo) através da análise da variação do filtro matemático com tempo de acomodação (Settling Time) de 1.5s.
 - **Telemetria de 1Hz:** A balança emite o peso filtrado em cima da base 1 vez por segundo (1Hz), permitindo que o aplicativo Front-end mostre a variação em tempo real.
 - **Calibração Segura:** Rotina de calibração assíncrona (não-bloqueante) que permite o cancelamento remoto pelo App sem corromper as configurações de `offset` e `scale_divider` anteriores.
 
@@ -80,7 +80,7 @@ O firmware utiliza comunicação bidirecional 100% via WebSocket para máxima ef
 | `registrar_leitura` | `{tokenAcesso, quantidadeMl}` | Envia o volume de água bebido. |
 | `registrar_calibracao`| `{tokenAcesso, pesoVazioG, recipienteId}` | Finaliza a Tara de um recipiente. |
 | `peso_em_tempo_real` | `{tokenAcesso, pesoAtual}` | Telemetria contínua do peso em cima da mesa. |
-| `ping_dispositivo` | `{tokenAcesso}` | Heartbeat enviado a cada 2 min (Keep-Alive lógico). |
+| `ping_dispositivo` | `{tokenAcesso}` | Heartbeat enviado a cada 30 segundos (Keep-Alive lógico). |
 | `calibracao_status` | `{tokenAcesso, mensagem}` | Feedback visual para o App durante a calibração física. |
 
 ### 📥 Escutados pela Balança (API → ESP32)
@@ -94,6 +94,5 @@ Esses eventos são recebidos encapsulados na chave `"comando"`.
 | `calibrate` | Inicia rotina interativa de calibração para achar o divisor de escala. |
 | `cancel_calibration` | Aborta a rotina de calibração física, restaurando a balança. |
 | `commit_calibration` | Confirma e salva a calibração física recém-feita na NVS. |
-| `ZERAR_META` | Zera localmente o consumo diário e restaura a FSM. |
 | `alerta_hidratacao` | Força a reprodução do alerta sonoro e visual de hidratação (Amarelo). |
 | `restore` | Formata a memória NVS, apaga credenciais de Wi-Fi e reinicia o chip. |
