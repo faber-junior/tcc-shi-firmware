@@ -49,10 +49,9 @@ const long SCALE_OFFSET = -14988;  // offset padrão
 const float SCALE_DIVIDER = 422.6; // scacle_divider padrão
 
 // Configurações de funcionamento para a máquina de estados
-const Hour ACTIVE_START_HOUR = {0, 1}; // Horário de inicio das atividades da balança
-const Hour ACTIVE_END_HOUR = {23, 58};// Horário de fim das atividades da balança
+const Hour ACTIVE_START_HOUR = {7, 0}; // Horário de inicio das atividades da balança
+const Hour ACTIVE_END_HOUR = {17, 0};// Horário de fim das atividades da balança
 const unsigned long GRACE_PERIOD = 900000; // Periodo de carência (15 minutos em ms)
-// const unsigned long GRACE_PERIOD = 60000; // Periodo de carência (1 minutos em ms)
 
 // Configurações de hidratação
 const int DAILY_GOAL = 2000; // Meta diaria
@@ -126,6 +125,7 @@ int current_consumed_volume = 0;
 int daily_consumed = 0;
 time_t last_sip_time = 0; 
 time_t last_alert_time = 0; 
+int offline_volume = 0; // Volume consumido enquanto a balança estava offline
 
 // Controle da máquina de estados
 enum AlertState { IDLE, GREEN, YELLOW, RED }; 
@@ -155,7 +155,7 @@ bool time_acceleration_active = false;
 unsigned long simulated_time_offset = 0;
 unsigned long last_accel_tick = 0;
 unsigned long real_grace_period = 0;
-unsigned int acceleration_factor = 60;
+unsigned int acceleration_factor = 60; // 60 segundos simulados a cada segundo real
 time_t accelerated_time;
 time_t simulated_last_sip_time = 0;
 time_t simulated_last_alert_time = 0;
@@ -328,6 +328,15 @@ void setLastResetDay(int last_reset)
   preferences.end(); 
 }
 
+void setOfflineVolume(int volume) 
+{
+  offline_volume = volume;
+  Preferences preferences;
+  preferences.begin("hydration", false);
+  preferences.putInt("offline_volume", offline_volume);
+  preferences.end();
+}
+
 int getDailyConsumed()
 {
   int consumed;
@@ -366,84 +375,33 @@ int getLastResetDay()
 
   return last_reset;
 }
+
+int getOfflineVolume() 
+{
+  int volume;
+  Preferences preferences;
+  preferences.begin("hydration", false);
+  volume = preferences.getInt("offline_volume", 0);
+  preferences.end();
+  return volume;
+}
 /*==================================================================================*/
 
 /* --- Funções de envio de dados via WebSocket --- */
 /*==================================================================================*/
-// void enviarGoleWS(int volume_ml)
-// {
-//   if (!webSocket.isConnected()) 
-//   {
-//     Serial.println("Disconnected. Sip not sent.");
-//     return;
-//   }
-
-//   DynamicJsonDocument doc(256);
-//   JsonArray array = doc.to<JsonArray>();
-//   array.add("registrar_leitura");
-
-//   JsonObject param = array.createNestedObject();
-//   param["tokenAcesso"]  = TOKEN_ACESSO;
-//   param["quantidadeMl"] = volume_ml;
-
-//   String payload;
-//   serializeJson(array, payload);
-//   webSocket.sendTXT("42" + payload);
-
-//   Serial.printf("Sip sent: %d ml\n", volume_ml);
-// }
-
-// void enviarCalibracaoWS(int pesoVazioG, String recipienteId)
-// {
-//   if (!webSocket.isConnected()) {
-//     Serial.println("[WS] Desconectado. Calibração não enviada.");
-//     return;
-//   }
-
-//   DynamicJsonDocument doc(256);
-//   JsonArray array = doc.to<JsonArray>();
-//   array.add("registrar_calibracao");
-
-//   JsonObject param = array.createNestedObject();
-//   param["tokenAcesso"]  = TOKEN_ACESSO;
-//   param["pesoVazioG"]   = pesoVazioG;
-//   param["recipienteId"] = recipienteId;
-
-//   String payload;
-//   serializeJson(array, payload);
-//   webSocket.sendTXT("42" + payload);
-
-//   Serial.printf("[WS] Calibração enviada: %d g\n", pesoVazioG);
-// }
-
-// void enviarAlertaWS(String mensagem)
-// {
-//   if (!webSocket.isConnected()) {
-//     Serial.println("[WS] Desconectado. Alerta não enviado.");
-//     return;
-//   }
-
-//   DynamicJsonDocument doc(256);
-//   JsonArray array = doc.to<JsonArray>();
-//   array.add("registrar_alerta");
-
-//   JsonObject param = array.createNestedObject();
-//   param["tokenAcesso"] = TOKEN_ACESSO;
-//   param["mensagem"]    = mensagem;
-
-//   String payload;
-//   serializeJson(array, payload);
-//   webSocket.sendTXT("42" + payload);
-
-//   Serial.println("[WS] Alerta enviado ao backend.");
-// }
-
 void sendSip(int volume_ml)
 {
   if (!webSocket.isConnected()) 
   {
-    Serial.println("[Websocket] Disconnected! Sip not sent.");
+    Serial.println("[Websocket] Disconnected! Sip saved for sync later.");
+    setOfflineVolume(offline_volume + volume_ml);
     return;
+  }
+
+  if (offline_volume > 0) // Está conectado e existe envio pendende de agua? Junta tudo num gole só!
+  {
+    volume_ml += offline_volume;
+    setOfflineVolume(0);
   }
 
   DynamicJsonDocument doc(256);
@@ -827,7 +785,7 @@ void calibrateScale(float known_weight)
 }
 /*==================================================================================*/
 
-/* --- Lógica RAW do Socket.io v4 --- */
+/* --- Função callback do WebSocket --- */
 /*==================================================================================*/
 // void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length) 
 // {
@@ -991,9 +949,25 @@ void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length)
         Serial.println("[Server -> Client] type: '40' (Access authorized)");
         Serial.println("[Server -> Client] Awaiting commands and server pings to keep the connection alive!");
         Serial.println("===============================================================================");
-        
-        // A MÁGICA É AQUI: Já não enviamos o evento de registo ("42").
-        // Desta forma, não acionamos o ValidationPipe do NestJS e a conexão não cai!
+
+        if (offline_volume > 0)
+        {
+          Serial.printf("[Websocket] Updating consumed volume. Volume: %d mL...\n", offline_volume);
+
+          DynamicJsonDocument doc(256);
+          JsonArray array = doc.to<JsonArray>();
+          array.add("registrar_leitura");
+          
+          JsonObject param = array.createNestedObject();
+          param["tokenAcesso"] = TOKEN_ACESSO;
+          param["quantidadeMl"] = offline_volume;
+          
+          String payloadStr;
+          serializeJson(array, payloadStr);
+          webSocket.sendTXT("42" + payloadStr);
+          
+          setOfflineVolume(0); // Reseta a variavel de volume não enviado!
+        }
       }
       else if (length > 1 && payload[0] == '4' && payload[1] == '2') // O servidor enviou um evento (cliente recebe type == '42')?
       {
@@ -1252,6 +1226,7 @@ void setupHydration()
   daily_consumed = getDailyConsumed();
   last_sip_time = getLastSipTime();
   last_reset_day = getLastResetDay();
+  offline_volume = getOfflineVolume();
 
   struct tm struct_last_sip_time;
   localtime_r(&last_sip_time, &struct_last_sip_time);
@@ -1260,6 +1235,7 @@ void setupHydration()
   Serial.print("Daily Consumed: "); 
   Serial.print(daily_consumed); 
   Serial.println(" ml");
+  Serial.printf("Offline Volume Pending: %d ml\n", offline_volume);
   Serial.print("Last sip time: "); 
   Serial.printf("%02d:%02d:%02d", struct_last_sip_time.tm_hour, struct_last_sip_time.tm_min, struct_last_sip_time.tm_sec);
   Serial.println(); 
@@ -1682,11 +1658,13 @@ void handleDayChange()
 
     daily_consumed = 0;
     last_reset_day = time_now.tm_mday; // Atualiza o ultimo reset para o dia atual
+    offline_volume = 0;
 
     Preferences preferences;
     preferences.begin("hydration", false);
     preferences.putInt("daily_consumed", 0);
     preferences.putInt("last_reset_day", last_reset_day);
+    preferences.putInt("offline_volume", 0);
     preferences.end();
 
     Serial.println("===============================================================================");
