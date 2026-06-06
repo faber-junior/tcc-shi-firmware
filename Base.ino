@@ -565,8 +565,9 @@ float exponentialMovingAverage(float reading, int equivalent_samples)
 int getConsumption(int current_weight)
 {
   int consumed_volume = 0; 
+  int minimum_container_weight = 15;
 
-  if (current_weight < (container_weight + NOISE_TOLERANCE)) // A balança está vazia?
+  if (current_weight < minimum_container_weight) // A balança está vazia?
   {
     if (is_container_present) // O recipiente estava na balança?
     {
@@ -638,6 +639,148 @@ int getConsumption(int current_weight)
   return consumed_volume;
 }
 
+// void calibrateScale(float known_weight)
+// {
+//   Serial.println("===============================================================================");
+//   Serial.println("Calibrating scale...");
+
+//   if (known_weight <= 0.0) // O peso é invalido?
+//   {
+//     sendCalibrationStatus("Erro: Peso inválido!");
+//     return; 
+//   }
+
+//   sendCalibrationStatus("Esvazie completamente a balança!");
+
+//   Serial.print("Leave the scale completely clear in: ");
+//   int countdown_time = 5; 
+//   long initial_time = millis(); 
+//   while (countdown_time >= 0)
+//   {
+//     webSocket.loop(); // Ouve o App durante a contagem!
+//     if (cancel_calibration_flag) 
+//     {
+//         sendCalibrationStatus("Calibração cancelada!");
+//         return;
+//     }
+
+//     if (millis() - initial_time >= 1000) 
+//     {
+//       Serial.print(countdown_time); Serial.print("...");
+//       initial_time = millis();
+//       countdown_time--;
+//     }
+//   }
+//   Serial.println();
+
+//   sendCalibrationStatus("Lendo tara. Não toque na balança..."); 
+
+//   int sample = 0;
+//   long offset = 0;
+//   while (sample < 20) 
+//   {
+//     webSocket.loop(); // Ouve o App durante a leitura do sensor!
+//     if (cancel_calibration_flag)
+//     {
+//       sendCalibrationStatus("Calibração cancelada!");
+//       return; 
+//     }
+
+//     if (scale.is_ready()) 
+//     {
+//       Serial.print(".");
+//       offset += scale.read();
+//       sample++;
+//     }
+//   }
+//   Serial.println();
+
+//   offset = offset / 20;
+  
+//   scale.set_offset(offset); // Aplica o offset na RAM para o cálculo seguinte, mas a NVS continua intacta!
+
+//   String weight_message = "Coloque o peso de " + String(known_weight, 2) + "g na balança.";
+//   sendCalibrationStatus(weight_message); 
+
+//   Serial.print("Place the known weight on the scale in: ");
+//   countdown_time = 5; 
+//   initial_time = millis(); 
+//   while (countdown_time >= 0) 
+//   {
+//     webSocket.loop();
+//     if (cancel_calibration_flag) 
+//     {
+//         // Se cancelar aqui, restaura o Offset que estava antes de iniciarmos
+//         Preferences pref; pref.begin("scale", true);
+//         scale.set_offset(pref.getLong("offset", SCALE_OFFSET));
+//         pref.end();
+//         sendCalibrationStatus("Calibração cancelada!");
+//         return;
+//     }
+
+//     if (millis() - initial_time >= 1000) 
+//     {
+//       Serial.print(countdown_time); Serial.print("...");
+//       initial_time = millis();
+//       countdown_time--;
+//     }
+//   }
+//   Serial.println();
+
+//   sendCalibrationStatus("Calculando fator de escala..."); 
+
+//   sample = 0;
+//   double weight_read = 0;
+//   while (sample < 20) 
+//   {
+//     webSocket.loop();
+//     if (cancel_calibration_flag) 
+//     {
+//         Preferences pref; pref.begin("scale", true);
+//         scale.set_offset(pref.getLong("offset", SCALE_OFFSET));
+//         pref.end();
+//         sendCalibrationStatus("Calibração cancelada!");
+//         return;
+//     }
+
+//     if (scale.is_ready()) 
+//     {
+//       Serial.print(".");
+//       weight_read += scale.get_value(1);
+//       sample++;
+//     }
+//   }
+//   Serial.println();
+  
+//   weight_read = weight_read / 20; 
+
+//   if (weight_read == 0.0) 
+//   {
+//     sendCalibrationStatus("Erro: Nenhum peso detectado!");
+//     Preferences pref; pref.begin("scale", true);
+//     scale.set_offset(pref.getLong("offset", SCALE_OFFSET));
+//     pref.end();
+//     return;
+//   }
+
+//   // Salva na RAM, mas não NVS!
+//   temp_offset = offset;
+//   temp_scale_divider = weight_read / known_weight; 
+
+//   // Restaura a balança para os valores antigos da memória caso o utilizador cancele!
+//   Preferences preferences;
+//   preferences.begin("scale", true);
+//   scale.set_offset(preferences.getLong("offset", SCALE_OFFSET));
+//   scale.set_scale(preferences.getFloat("scale_divider", SCALE_DIVIDER));
+//   preferences.end();
+
+//   sendCalibrationStatus("Pronto! Confirme no App para salvar permanentemente."); 
+
+//   Serial.println("Calibration math completed! Awaiting backend confirmation...");
+//   Serial.print("New calculated offset: "); Serial.println(temp_offset);
+//   Serial.print("New calculated divider: "); Serial.println(temp_scale_divider, 4);
+//   Serial.println("===============================================================================");
+// }
 void calibrateScale(float known_weight)
 {
   Serial.println("===============================================================================");
@@ -762,157 +905,41 @@ void calibrateScale(float known_weight)
     return;
   }
 
-  // Salva na RAM, mas não NVS!
+  // Salva na RAM
   temp_offset = offset;
   temp_scale_divider = weight_read / known_weight; 
 
-  // Restaura a balança para os valores antigos da memória caso o utilizador cancele!
+  // --- ALTERAÇÃO: AUTO-COMMIT (Sem esperar comando do Gabriel) ---
+  // Aplica fisicamente na balança
+  scale.set_offset(temp_offset);
+  scale.set_scale(temp_scale_divider);
+
+  // Grava permanentemente na NVS
   Preferences preferences;
-  preferences.begin("scale", true);
-  scale.set_offset(preferences.getLong("offset", SCALE_OFFSET));
-  scale.set_scale(preferences.getFloat("scale_divider", SCALE_DIVIDER));
+  preferences.begin("scale", false);
+  preferences.putLong("offset", temp_offset);
+  preferences.putFloat("scale_divider", temp_scale_divider);
   preferences.end();
 
-  sendCalibrationStatus("Pronto! Confirme no App para salvar permanentemente."); 
+  // Limpa os temporários
+  temp_offset = 0;
+  temp_scale_divider = 0.0;
 
-  Serial.println("Calibration math completed! Awaiting backend confirmation...");
-  Serial.print("New calculated offset: "); Serial.println(temp_offset);
-  Serial.print("New calculated divider: "); Serial.println(temp_scale_divider, 4);
-  Serial.println("===============================================================================");
+  sendCalibrationStatus("Calibração salva com sucesso!"); 
+  Serial.println("[WS] Calibração auto-commit salva na memória permanente!");
+  
+  // ==========================================
+  // AMNÉSIA DA MÁQUINA DE ESTADOS (Para evitar o erro de cálculo)
+  // ==========================================
+  last_recorded_weight = 0; 
+  is_container_present = false; 
+  is_waiting_stability = false;
+  // ==========================================
 }
 /*==================================================================================*/
 
 /* --- Função callback do WebSocket --- */
 /*==================================================================================*/
-// void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length) 
-// {
-//   switch (type)
-//   {
-//     case WStype_DISCONNECTED:
-//       Serial.println("===============================================================================");
-//       Serial.println("Disconnected from the NestJS server!");
-//       Serial.println("===============================================================================");
-//       break;
-
-//     case WStype_CONNECTED:
-//       Serial.println("===============================================================================");
-//       Serial.println("Connection to the NestJS has been estabilished! Waiting for the server answer.");
-//       Serial.println("===============================================================================");
-//       break;
-
-//     case WStype_TEXT:
-//     {
-//       if (length > 0 && payload[0] == '0') // O servidor abriu o túnel de conexão (cliente recebe type == '0')?
-//       {
-//         // Cliente responde que quer se conectar (cliente envia type == '40')
-//         Serial.println("===============================================================================");
-//         Serial.println("[Client -> Server] type: '40' (Requesting access)");
-//         Serial.println("===============================================================================");
-//         webSocket.sendTXT("40"); 
-//       }
-//       else if (length > 1 && payload[0] == '4' && payload[1] == '0') // O servidor aceitou a conexão (cliente recebe type == '40')?
-//       {
-//         // Conexão realizada com sucesso
-//         Serial.println("===============================================================================");
-//         Serial.println("[Server -> Client] type: '40' (Access authorized)");
-//         Serial.println("[Server -> Client] Awaiting commands and server pings to keep the connection alive!");
-//         Serial.println("===============================================================================");
-        
-//         // A MÁGICA É AQUI: Já não enviamos o evento de registo ("42").
-//         // Desta forma, não acionamos o ValidationPipe do NestJS e a conexão não cai!
-//       }
-//       else if (length > 1 && payload[0] == '4' && payload[1] == '2') // O servidor enviou um evento (cliente recebe type == '42')?
-//       {
-//         // Cliente recebe um payload JSON com comando
-//         char* jsonPayload = (char*)(payload + 2); // Salta o prefixo "42"
-//         StaticJsonDocument<256> doc;
-//         DeserializationError error = deserializeJson(doc, jsonPayload);
-        
-//         if (!error) // Não deu erro ao desserializar o JSON?
-//         {
-//           const char* evento = doc[0];
-          
-//           if (strcmp(evento, "comando") == 0) 
-//           { 
-//             String comandoReal = doc[1]["comando"].as<String>();
-//             float parametro = doc[1]["parametro"].as<float>();
-            
-//             Serial.printf("[WS APP] Ordem Remota Executada: %s\n", comandoReal.c_str());
-            
-//             if (comandoReal == "CALIBRAR" || comandoReal == "calibrate") 
-//             {
-//               String recipiente_id = doc[1]["parametro"].as<String>();
-//               setContainerWeight((int)filtered_weight);   
-//               last_recorded_weight = 0; 
-//               enviarCalibracaoWS((int)filtered_weight, recipiente_id);
-              
-//             }
-//             else if (comandoReal == "ZERAR_META") 
-//             {
-//               setDailyConsumed(0);
-//               setLastSipTime(0);
-//               simulated_last_sip_time = 0; 
-//               current_state = IDLE;
-//             }
-//             else if (comandoReal == "set_goal") 
-//             {
-//               setDailyGoal((int)parametro);
-//             }
-//             else if (comandoReal == "restore") 
-//             {
-//               restoreDefaults();
-//             }
-//             else if (comandoReal == "alerta_hidratacao") 
-//             {
-//               triggerAlert(YELLOW);
-//             }
-//             else if (comandoReal == "set_horario_acordar") 
-//             {
-//               Hour novo_horario = {(int)parametro, 0};
-//               setActiveStartHour(novo_horario);
-//             }
-//             else if (comandoReal == "set_horario_dormir") 
-//             {
-//               Hour novo_horario = {(int)parametro, 0};
-//               setActiveEndHour(novo_horario);
-//             }
-//             else if (comandoReal == "set_grace_period") 
-//             {
-//               unsigned long grace_ms = (unsigned long)parametro * 60 * 1000;
-//               setGracePeriod(grace_ms);
-//             }
-//             else if (comandoReal == "set_container_weight") {
-//               setContainerWeight((int)parametro);
-//               last_recorded_weight = 0; // Previne que o ajuste brusco conte como gole falso
-//               Serial.printf("[WS] Recipiente atualizado pelo backend: %d g\n", (int)parametro);
-//             }
-//             else if (comandoReal == "set_daily_consumed") {
-//               setDailyConsumed((int)parametro);
-              
-//               // Sincroniza o dia de reset lógico com o dia de hoje
-//               struct tm time_now;
-//               if (getLocalTime(&time_now, 0)) {
-//                   setLastResetDay(time_now.tm_mday);
-//               }
-//               Serial.printf("[WS] Volume diário de hoje recebido: %d ml\n", (int)parametro);
-//             }
-//           }
-//         }
-//       }
-//       else if (length > 0 && payload[0] == '2') // O servidor enviou um ping (cliente recebe type == '2')?
-//       {
-//         // O cliente responde com pong (type == '3') para manter a conexão ativa
-//         webSocket.sendTXT("3");
-//       }
-//       break;
-//     case WStype_PING:
-//       // O cliente responde com pong (type == '3') para manter a conexão ativa
-//       webSocket.sendTXT("3"); // Responde o pong do Socket.io
-//       break;
-//     }
-//   }
-// }
-
 void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length) 
 {
   switch (type)
@@ -990,9 +1017,12 @@ void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length)
             {
               restoreDefaults();
             }
-            else if (command == "set_goal") // Não esta funcionando, no back-end implementar o envio
+            else if (command == "set_daily_goal") // Não esta funcionando, no back-end implementar o envio
             {
               setDailyGoal((int)parameter);
+
+              Serial.print("daily_goal updated to: ");
+              Serial.println(parameter);
             }
             else if (command == "set_grace_period") // Não esta funcionando, no back-end implementar o envio
             {
@@ -1011,6 +1041,9 @@ void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length)
             {
               setDailyConsumed((int)parameter);
 
+              Serial.print("daily_consumed updated to: ");
+              Serial.println(parameter);
+
               // Sincroniza o dia de reset lógico com o dia de hoje
               struct tm time_now;
               if (getLocalTime(&time_now, 0)) 
@@ -1026,33 +1059,21 @@ void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length)
             else if (command == "set_active_end_hour") // Não esta funcionando, no back-end implementar o envio
             {
               Hour new_active_start_hour = {(int)parameter, 0};
-              setActiveStartHour(new_active_start_hour);
+              setActiveEndHour(new_active_start_hour);
             }
             else if (command == "get_container_weight") // Não esta funcionando ainda, no backend atualizar o nome do comando de "calibrate" para "get_container_weight"
             {
               String container_id = doc[1]["parametro"].as<String>();
               sendContainerWeight((int)filtered_weight, container_id);
-
-              last_recorded_weight = 0; 
-              is_container_present = false; 
-              is_waiting_stability = false;
             }
-            else if (command == "calibrate")
+            else if (command == "calibrate" || command == "calibrar_balanca")
             {
               float known_weight = doc[1]["parametro"].as<float>();
               calibrateScale(known_weight);
-
-              last_recorded_weight = 0; 
-              is_container_present = false; 
-              is_waiting_stability = false;
             }
             else if (command == "cancel_calibration") 
             {
               cancel_calibration_flag = true;
-
-              last_recorded_weight = 0; 
-              is_container_present = false; 
-              is_waiting_stability = false;
             }
             else if (command == "commit_calibration") 
             {
@@ -1075,10 +1096,6 @@ void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length)
 
                 sendCalibrationStatus("Calibração gravada com sucesso!");
                 Serial.println("[WS] Nova calibração salva na memória permanente!");
-
-                last_recorded_weight = 0; 
-                is_container_present = false; 
-                is_waiting_stability = false;
               }
             }
           }
@@ -1642,32 +1659,16 @@ void handleDayChange()
 
   bool apply_reset = false;
 
-  if (was_active && !is_active) // Estava ativo e não esta mais? (Encerrou o expediente)
+  // Verifica EXCLUSIVAMENTE se houve mudança de data no calendário
+  if (last_reset_day != time_now.tm_mday) 
   {
-    apply_reset = true;
-  }
-  else if (last_reset_day != time_now.tm_mday) // É um novo dia no calendário e ainda não resetou hoje?
-  {
-    int current_mins = time_now.tm_hour * 60 + time_now.tm_min;
-    int start_mins = active_start_hour.hour * 60 + active_start_hour.minute;
-    int end_mins = active_end_hour.hour * 60 + active_end_hour.minute;
-    
-    bool crosses_midnight = (start_mins > end_mins); // O horário ativo passa da meia-noite?
-    
-    if (crosses_midnight && current_mins <= end_mins) // A janela passa da meia-noite e ainda estamos na madrugada? (O expediente lógico de hoje ainda não acabou)
-    {
-       // Não faz nada (O reset vai acontecer naturalmente quando o expediente atual acabar)
-    } 
-    else 
-    {
-       apply_reset = true; // Estamos de fato em um novo dia. Confirma o reset
-    }
+    apply_reset = true; 
   }
 
   if (apply_reset) // A flag de reset foi acionada?
   {
     Serial.println("===============================================================================");
-    Serial.println("New date or active period detected! Reseting consumption...");
+    Serial.println("New date detected! Reseting consumption...");
 
     current_state = IDLE;
     deficit = 0;
@@ -2150,6 +2151,21 @@ void loop()
   //   // Printa os dados da maquina de estados
   //   printFiniteStateMachineData();
 
+    // Periodo de carencia
+    Serial.print("grace_period:");
+    Serial.print(grace_period / 1000 / 60); 
+    Serial.print(", ");
+
+    // Horario de inicio
+    Serial.print("active_start_hour:");
+    Serial.print(active_start_hour.hour); 
+    Serial.print(", ");
+
+    // Horario de inicio
+    Serial.print("active_end_hour:");
+    Serial.print(active_end_hour.hour); 
+    Serial.print(", ");
+
     // Peso do recipiente
     Serial.print("container_weight:");
     Serial.print(container_weight); 
@@ -2163,6 +2179,11 @@ void loop()
     // Valor diario consumido
     Serial.print("daily_consumed:");
     Serial.print(daily_consumed); 
+    Serial.print(", ");
+
+    // Volume ideal
+    Serial.print("current_ideal_volume:");
+    Serial.print(current_ideal_volume); 
     Serial.print(", ");
 
     // Deficit
