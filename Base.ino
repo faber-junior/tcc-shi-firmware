@@ -639,148 +639,6 @@ int getConsumption(int current_weight)
   return consumed_volume;
 }
 
-// void calibrateScale(float known_weight)
-// {
-//   Serial.println("===============================================================================");
-//   Serial.println("Calibrating scale...");
-
-//   if (known_weight <= 0.0) // O peso é invalido?
-//   {
-//     sendCalibrationStatus("Erro: Peso inválido!");
-//     return; 
-//   }
-
-//   sendCalibrationStatus("Esvazie completamente a balança!");
-
-//   Serial.print("Leave the scale completely clear in: ");
-//   int countdown_time = 5; 
-//   long initial_time = millis(); 
-//   while (countdown_time >= 0)
-//   {
-//     webSocket.loop(); // Ouve o App durante a contagem!
-//     if (cancel_calibration_flag) 
-//     {
-//         sendCalibrationStatus("Calibração cancelada!");
-//         return;
-//     }
-
-//     if (millis() - initial_time >= 1000) 
-//     {
-//       Serial.print(countdown_time); Serial.print("...");
-//       initial_time = millis();
-//       countdown_time--;
-//     }
-//   }
-//   Serial.println();
-
-//   sendCalibrationStatus("Lendo tara. Não toque na balança..."); 
-
-//   int sample = 0;
-//   long offset = 0;
-//   while (sample < 20) 
-//   {
-//     webSocket.loop(); // Ouve o App durante a leitura do sensor!
-//     if (cancel_calibration_flag)
-//     {
-//       sendCalibrationStatus("Calibração cancelada!");
-//       return; 
-//     }
-
-//     if (scale.is_ready()) 
-//     {
-//       Serial.print(".");
-//       offset += scale.read();
-//       sample++;
-//     }
-//   }
-//   Serial.println();
-
-//   offset = offset / 20;
-  
-//   scale.set_offset(offset); // Aplica o offset na RAM para o cálculo seguinte, mas a NVS continua intacta!
-
-//   String weight_message = "Coloque o peso de " + String(known_weight, 2) + "g na balança.";
-//   sendCalibrationStatus(weight_message); 
-
-//   Serial.print("Place the known weight on the scale in: ");
-//   countdown_time = 5; 
-//   initial_time = millis(); 
-//   while (countdown_time >= 0) 
-//   {
-//     webSocket.loop();
-//     if (cancel_calibration_flag) 
-//     {
-//         // Se cancelar aqui, restaura o Offset que estava antes de iniciarmos
-//         Preferences pref; pref.begin("scale", true);
-//         scale.set_offset(pref.getLong("offset", SCALE_OFFSET));
-//         pref.end();
-//         sendCalibrationStatus("Calibração cancelada!");
-//         return;
-//     }
-
-//     if (millis() - initial_time >= 1000) 
-//     {
-//       Serial.print(countdown_time); Serial.print("...");
-//       initial_time = millis();
-//       countdown_time--;
-//     }
-//   }
-//   Serial.println();
-
-//   sendCalibrationStatus("Calculando fator de escala..."); 
-
-//   sample = 0;
-//   double weight_read = 0;
-//   while (sample < 20) 
-//   {
-//     webSocket.loop();
-//     if (cancel_calibration_flag) 
-//     {
-//         Preferences pref; pref.begin("scale", true);
-//         scale.set_offset(pref.getLong("offset", SCALE_OFFSET));
-//         pref.end();
-//         sendCalibrationStatus("Calibração cancelada!");
-//         return;
-//     }
-
-//     if (scale.is_ready()) 
-//     {
-//       Serial.print(".");
-//       weight_read += scale.get_value(1);
-//       sample++;
-//     }
-//   }
-//   Serial.println();
-  
-//   weight_read = weight_read / 20; 
-
-//   if (weight_read == 0.0) 
-//   {
-//     sendCalibrationStatus("Erro: Nenhum peso detectado!");
-//     Preferences pref; pref.begin("scale", true);
-//     scale.set_offset(pref.getLong("offset", SCALE_OFFSET));
-//     pref.end();
-//     return;
-//   }
-
-//   // Salva na RAM, mas não NVS!
-//   temp_offset = offset;
-//   temp_scale_divider = weight_read / known_weight; 
-
-//   // Restaura a balança para os valores antigos da memória caso o utilizador cancele!
-//   Preferences preferences;
-//   preferences.begin("scale", true);
-//   scale.set_offset(preferences.getLong("offset", SCALE_OFFSET));
-//   scale.set_scale(preferences.getFloat("scale_divider", SCALE_DIVIDER));
-//   preferences.end();
-
-//   sendCalibrationStatus("Pronto! Confirme no App para salvar permanentemente."); 
-
-//   Serial.println("Calibration math completed! Awaiting backend confirmation...");
-//   Serial.print("New calculated offset: "); Serial.println(temp_offset);
-//   Serial.print("New calculated divider: "); Serial.println(temp_scale_divider, 4);
-//   Serial.println("===============================================================================");
-// }
 void calibrateScale(float known_weight)
 {
   Serial.println("===============================================================================");
@@ -905,37 +763,181 @@ void calibrateScale(float known_weight)
     return;
   }
 
-  // Salva na RAM
+  // Salva na RAM, mas não NVS!
   temp_offset = offset;
   temp_scale_divider = weight_read / known_weight; 
 
-  // --- ALTERAÇÃO: AUTO-COMMIT (Sem esperar comando do Gabriel) ---
-  // Aplica fisicamente na balança
-  scale.set_offset(temp_offset);
-  scale.set_scale(temp_scale_divider);
-
-  // Grava permanentemente na NVS
+  // Restaura a balança para os valores antigos da memória caso o utilizador cancele!
   Preferences preferences;
-  preferences.begin("scale", false);
-  preferences.putLong("offset", temp_offset);
-  preferences.putFloat("scale_divider", temp_scale_divider);
+  preferences.begin("scale", true);
+  scale.set_offset(preferences.getLong("offset", SCALE_OFFSET));
+  scale.set_scale(preferences.getFloat("scale_divider", SCALE_DIVIDER));
   preferences.end();
 
-  // Limpa os temporários
-  temp_offset = 0;
-  temp_scale_divider = 0.0;
+  sendCalibrationStatus("Pronto! Confirme no App para salvar permanentemente."); 
 
-  sendCalibrationStatus("Calibração salva com sucesso!"); 
-  Serial.println("[WS] Calibração auto-commit salva na memória permanente!");
-  
-  // ==========================================
-  // AMNÉSIA DA MÁQUINA DE ESTADOS (Para evitar o erro de cálculo)
-  // ==========================================
-  last_recorded_weight = 0; 
-  is_container_present = false; 
-  is_waiting_stability = false;
-  // ==========================================
+  Serial.println("Calibration math completed! Awaiting backend confirmation...");
+  Serial.print("New calculated offset: "); Serial.println(temp_offset);
+  Serial.print("New calculated divider: "); Serial.println(temp_scale_divider, 4);
+  Serial.println("===============================================================================");
 }
+
+
+// void calibrateScale(float known_weight)
+// {
+//   Serial.println("===============================================================================");
+//   Serial.println("Calibrating scale...");
+
+//   if (known_weight <= 0.0) // O peso é invalido?
+//   {
+//     sendCalibrationStatus("Erro: Peso inválido!");
+//     return; 
+//   }
+
+//   sendCalibrationStatus("Esvazie completamente a balança!");
+
+//   Serial.print("Leave the scale completely clear in: ");
+//   int countdown_time = 5; 
+//   long initial_time = millis(); 
+//   while (countdown_time >= 0)
+//   {
+//     webSocket.loop(); // Ouve o App durante a contagem!
+//     if (cancel_calibration_flag) 
+//     {
+//         sendCalibrationStatus("Calibração cancelada!");
+//         return;
+//     }
+
+//     if (millis() - initial_time >= 1000) 
+//     {
+//       Serial.print(countdown_time); Serial.print("...");
+//       initial_time = millis();
+//       countdown_time--;
+//     }
+//   }
+//   Serial.println();
+
+//   sendCalibrationStatus("Lendo tara. Não toque na balança..."); 
+
+//   int sample = 0;
+//   long offset = 0;
+//   while (sample < 20) 
+//   {
+//     webSocket.loop(); // Ouve o App durante a leitura do sensor!
+//     if (cancel_calibration_flag)
+//     {
+//       sendCalibrationStatus("Calibração cancelada!");
+//       return; 
+//     }
+
+//     if (scale.is_ready()) 
+//     {
+//       Serial.print(".");
+//       offset += scale.read();
+//       sample++;
+//     }
+//   }
+//   Serial.println();
+
+//   offset = offset / 20;
+  
+//   scale.set_offset(offset); // Aplica o offset na RAM para o cálculo seguinte, mas a NVS continua intacta!
+
+//   String weight_message = "Coloque o peso de " + String(known_weight, 2) + "g na balança.";
+//   sendCalibrationStatus(weight_message); 
+
+//   Serial.print("Place the known weight on the scale in: ");
+//   countdown_time = 5; 
+//   initial_time = millis(); 
+//   while (countdown_time >= 0) 
+//   {
+//     webSocket.loop();
+//     if (cancel_calibration_flag) 
+//     {
+//         // Se cancelar aqui, restaura o Offset que estava antes de iniciarmos
+//         Preferences pref; pref.begin("scale", true);
+//         scale.set_offset(pref.getLong("offset", SCALE_OFFSET));
+//         pref.end();
+//         sendCalibrationStatus("Calibração cancelada!");
+//         return;
+//     }
+
+//     if (millis() - initial_time >= 1000) 
+//     {
+//       Serial.print(countdown_time); Serial.print("...");
+//       initial_time = millis();
+//       countdown_time--;
+//     }
+//   }
+//   Serial.println();
+
+//   sendCalibrationStatus("Calculando fator de escala..."); 
+
+//   sample = 0;
+//   double weight_read = 0;
+//   while (sample < 20) 
+//   {
+//     webSocket.loop();
+//     if (cancel_calibration_flag) 
+//     {
+//         Preferences pref; pref.begin("scale", true);
+//         scale.set_offset(pref.getLong("offset", SCALE_OFFSET));
+//         pref.end();
+//         sendCalibrationStatus("Calibração cancelada!");
+//         return;
+//     }
+
+//     if (scale.is_ready()) 
+//     {
+//       Serial.print(".");
+//       weight_read += scale.get_value(1);
+//       sample++;
+//     }
+//   }
+//   Serial.println();
+  
+//   weight_read = weight_read / 20; 
+
+//   if (weight_read == 0.0) 
+//   {
+//     sendCalibrationStatus("Erro: Nenhum peso detectado!");
+//     Preferences pref; pref.begin("scale", true);
+//     scale.set_offset(pref.getLong("offset", SCALE_OFFSET));
+//     pref.end();
+//     return;
+//   }
+
+//   // Salva na RAM
+//   temp_offset = offset;
+//   temp_scale_divider = weight_read / known_weight; 
+
+//   // --- ALTERAÇÃO: AUTO-COMMIT (Sem esperar comando do Gabriel) ---
+//   // Aplica fisicamente na balança
+//   scale.set_offset(temp_offset);
+//   scale.set_scale(temp_scale_divider);
+
+//   // Grava permanentemente na NVS
+//   Preferences preferences;
+//   preferences.begin("scale", false);
+//   preferences.putLong("offset", temp_offset);
+//   preferences.putFloat("scale_divider", temp_scale_divider);
+//   preferences.end();
+
+//   // Limpa os temporários
+//   temp_offset = 0;
+//   temp_scale_divider = 0.0;
+
+//   sendCalibrationStatus("Calibração salva com sucesso!"); 
+//   Serial.println("[WS] Calibração auto-commit salva na memória permanente!");
+  
+//   // ==========================================
+//   // AMNÉSIA DA MÁQUINA DE ESTADOS (Para evitar o erro de cálculo)
+//   // ==========================================
+//   last_recorded_weight = 0; 
+//   is_container_present = false; 
+//   is_waiting_stability = false;
+//   // ==========================================
+// }
 /*==================================================================================*/
 
 /* --- Função callback do WebSocket --- */
@@ -1020,6 +1022,7 @@ void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length)
             else if (command == "set_daily_goal") // Não esta funcionando, no back-end implementar o envio
             {
               setDailyGoal((int)parameter);
+              current_state = IDLE;
 
               Serial.print("daily_goal updated to: ");
               Serial.println(parameter);
@@ -1040,6 +1043,7 @@ void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length)
             else if (command == "set_daily_consumed")
             {
               setDailyConsumed((int)parameter);
+              current_state = IDLE;
 
               Serial.print("daily_consumed updated to: ");
               Serial.println(parameter);
@@ -2150,6 +2154,28 @@ void loop()
 
   //   // Printa os dados da maquina de estados
   //   printFiniteStateMachineData();
+
+  char *state; // Cria uma "string" para o estado da máquina
+
+  switch (current_state)
+  {
+    case IDLE:
+      state = "IDLE";
+      break;
+    case GREEN:
+      state = "GREEN";
+      break;
+    case YELLOW:
+      state = "YELLOW";
+      break;
+    case RED:
+      state = "RED";
+      break;
+  }
+
+    Serial.print("current_state:");
+    Serial.print(state); 
+    Serial.print(", ");
 
     // Periodo de carencia
     Serial.print("grace_period:");
