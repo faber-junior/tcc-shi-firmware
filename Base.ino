@@ -5,8 +5,6 @@
 #include "time.h"              // Biblioteca padrão do C++ para lidar com relógio e data
 #include <WebSocketsClient.h>  // Biblioteca para gerenciar clientes WebSocket (by Markus Sattler)
 #include <ArduinoJson.h>       // Biblioteca para lidar com JSONs
-#include <HTTPClient.h>        // Biblioteca para enviar requisições POST REST
-
 
 /* --- Structs --- */
 /*==================================================================================*/
@@ -159,7 +157,6 @@ unsigned int acceleration_factor = 60; // 60 segundos simulados a cada segundo r
 time_t accelerated_time;
 time_t simulated_last_sip_time = 0;
 time_t simulated_last_alert_time = 0;
-// unsigned long last_http_ping = 0;
 
 // Variáveis temporárias para calibração física
 bool cancel_calibration_flag = false;
@@ -1034,17 +1031,28 @@ void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length)
             else if (command == "get_container_weight") // Não esta funcionando ainda, no backend atualizar o nome do comando de "calibrate" para "get_container_weight"
             {
               String container_id = doc[1]["parametro"].as<String>();
-              setContainerWeight((int)filtered_weight);   
               sendContainerWeight((int)filtered_weight, container_id);
+
+              last_recorded_weight = 0; 
+              is_container_present = false; 
+              is_waiting_stability = false;
             }
             else if (command == "calibrate")
             {
               float known_weight = doc[1]["parametro"].as<float>();
               calibrateScale(known_weight);
+
+              last_recorded_weight = 0; 
+              is_container_present = false; 
+              is_waiting_stability = false;
             }
             else if (command == "cancel_calibration") 
             {
               cancel_calibration_flag = true;
+
+              last_recorded_weight = 0; 
+              is_container_present = false; 
+              is_waiting_stability = false;
             }
             else if (command == "commit_calibration") 
             {
@@ -1067,6 +1075,10 @@ void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length)
 
                 sendCalibrationStatus("Calibração gravada com sucesso!");
                 Serial.println("[WS] Nova calibração salva na memória permanente!");
+
+                last_recorded_weight = 0; 
+                is_container_present = false; 
+                is_waiting_stability = false;
               }
             }
           }
@@ -2029,19 +2041,6 @@ void loop()
   handleHardReset(); // Gerencia botão "en" para restaurar dados de fabrica
 
   webSocket.loop(); // Mantém o WebSocket vivo e escuta comandos remotos
-
-  // if (millis() - last_http_ping > 120000) 
-  // { // A cada 2 minutos
-  //   last_http_ping = millis();
-  //   if (WiFi.status() == WL_CONNECTED) {
-  //     HTTPClient http;
-  //     char url[128];
-  //     snprintf(url, sizeof(url), "https://%s/dispositivos/comando/%s", WS_HOST, TOKEN_ACESSO);
-  //     http.begin(url);
-  //     http.GET();
-  //     http.end();
-  //   }
-  // }
 
   // Envia um "Estou Online" para o backend a cada 30 segundos
   if (millis() - last_ws_ping > 30000) 
