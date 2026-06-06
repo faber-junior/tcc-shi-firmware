@@ -1005,6 +1005,10 @@ void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length)
             else if (command == "set_container_weight")
             {
               setContainerWeight((int)parameter);
+
+              last_recorded_weight = 0; 
+              is_container_present = false; 
+              is_waiting_stability = false;
             }
             else if (command == "set_daily_consumed")
             {
