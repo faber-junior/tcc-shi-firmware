@@ -143,7 +143,7 @@ bool is_alert_pausing = false; // O alerta está no intervalo entre as 3 repeti�
 unsigned long alert_pause_start = 0; // Instante exato desde o inicio do ultimo ciclo da alerta
 unsigned long current_animation_interval = 0; // Intervalo da animacao atual
 unsigned long previous_animation_time = 0; // Instante exato do ultima animacao
-unsigned long last_alert_instant = 0; // Instante exato do fim do ultimo alerta
+time_t last_alert_instant = 0; // Horário do fim do ultimo alerta
 int note_index = 0; // Indice atual da nota na melodia
 int alert_repeat_count = 0; // Contagem de repetições da melodia atual
 
@@ -1358,7 +1358,7 @@ void processAnimations()
       {
         if (!is_test_alert) // Só atualiza os tempos se NÃO for um comando do Serial
         {
-          last_alert_instant = millis(); // Atualiza a variavel last_alert_instant para fazer a verificação de grace_time
+          last_alert_instant = now; // Atualiza a variavel last_alert_instant para fazer a verificação de grace_time
           last_alert_time = time(NULL); // Para depuração, depois apagar
           simulated_last_alert_time = now;
         }
@@ -1484,8 +1484,9 @@ void handleAlerts()
     return; 
   }
 
+  unsigned long grace_period_seconds = grace_period / 1000;
 
-  if (millis() - last_alert_instant < grace_period) // Está no período de carência?
+  if (now - last_alert_instant < grace_period_seconds) // Está no período de carência?
   {
     switch (current_state)
     {
@@ -1512,6 +1513,7 @@ void handleAlerts()
         break;
     }
   }
+    
   else // Não está no período de carência?
   {
     if (current_state == YELLOW || current_state == RED)
@@ -1808,9 +1810,7 @@ void handleSerialCommands()
         Serial.println("\n===============================================================");
         Serial.printf("Tempo Acelerado ATIVADO! (Fator: %d segs por tick)\n", acceleration_factor);
         Serial.println("===============================================================\n");
-        
-        real_grace_period = grace_period; // Salva o original
-        grace_period = 5000;              // Encolhe a carência para 5 segundos no teste             
+                
         last_accel_tick = millis();
       } 
       else 
@@ -1819,7 +1819,6 @@ void handleSerialCommands()
         Serial.println("Tempo Acelerado DESATIVADO!");
         Serial.println("===============================================================\n");
         
-        grace_period = real_grace_period; // Restaura o original
         simulated_time_offset = 0;        // Zera o tempo falso
       }
     }
@@ -1916,7 +1915,7 @@ void setup()
   simulated_last_sip_time = last_sip_time;
   simulated_last_alert_time = last_alert_time;
 
-  last_alert_instant = millis() - grace_period; // Força o sistema a inicilizar um alerta se os estados forem YELLOW ou RED
+  last_alert_instant = time(NULL) - (grace_period / 1000); // Força o sistema a inicilizar um alerta se os estados forem YELLOW ou RED
 }
 
 void loop() 
@@ -2000,9 +1999,7 @@ void loop()
     time_t display_alert = time_acceleration_active ? simulated_last_alert_time : last_alert_time;
     struct tm struct_last_alert_time; 
     localtime_r(&display_alert, &struct_last_alert_time);
-    
-
-  
+     
   
   //   // // Instante do ultimo alerta
   //   // Serial.print("last_alert_instant:");
